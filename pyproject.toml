@@ -1,0 +1,19 @@
+[project]
+name = "dni-mcp-server"
+version = "0.1.0"
+description = "Servidor MCP para el agente de asistencia de cita DNI"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx",
+    "fastmcp",
+]
+
+[project.scripts]
+dni-mcp-server = "app:main"
+
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["app"]
