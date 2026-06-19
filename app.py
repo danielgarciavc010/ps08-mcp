@@ -477,4 +477,4 @@ def crear_codigo_peticion() -> dict:
 # Arranque
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
-    mcp.run(transport="sse", host=HOST, port=PORT)
+    mcp.run(transport="stdio")
