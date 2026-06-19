@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [project.scripts]
-dni-mcp-server = "app:main"
+dni-mcp-server = "server:main"
 
 [build-system]
 requires = ["setuptools>=68.0.0", "wheel"]
