@@ -33,6 +33,11 @@ TIMEOUT  = 15.0
 HOST     = "0.0.0.0"
 PORT     = 8000
 
+# Maximo de comisarias que se devuelven al agente. El servicio puede devolver
+# decenas (p. ej. 35 en Madrid); enviarlas todas satura al modelo. Recortamos
+# a unas pocas, ya limpias y numeradas, para que el agente no se atasque.
+MAX_COMISARIAS = 5
+
 # CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
 CSV_CODIGOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigos_ine.csv")
 
@@ -204,13 +209,22 @@ async def consultar_comisarias(
         id_provincia:    Código numérico de provincia  (ej. 28 → Madrid).
         id_localidad:    Código numérico de localidad  (ej. 28079 → Madrid capital).
 
-    Returns:
+    Returns (lista ya recortada y limpia, como maximo MAX_COMISARIAS):
         {
             "ok": true,
             "data": {
                 "provincia": 28,
                 "localidad": 28079,
-                "comisarias": [ { ...campos del servicio... } ]
+                "total": 35,
+                "mostradas": 5,
+                "comisarias": [
+                    {
+                        "numero": 1,
+                        "id_comisaria": "8693",
+                        "nombre": "MADRID-CENTRO",
+                        "direccion": "Calle Luna 17. MADRID"
+                    }
+                ]
             }
         }
     """
@@ -224,12 +238,26 @@ async def consultar_comisarias(
     if err:
         return err
 
+    tab = raw.get("tabComi") or [] if isinstance(raw, dict) else []
+
+    comisarias = [
+        {
+            "numero":       i,
+            "id_comisaria": c.get("comisariaCita", ""),
+            "nombre":       c.get("desComisariaCita", ""),
+            "direccion":    c.get("direccionCita", ""),
+        }
+        for i, c in enumerate(tab[:MAX_COMISARIAS], start=1)
+    ]
+
     return {
         "ok": True,
         "data": {
             "provincia":  id_provincia,
             "localidad":  id_localidad,
-            "comisarias": raw,
+            "total":      len(tab),
+            "mostradas":  len(comisarias),
+            "comisarias": comisarias,
         },
     }
 
