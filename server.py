@@ -1,5 +1,5 @@
 """
- MCP Server – kyoe-consultas
+ MCP Server - kyoe-consultas
  Transporte: SSE (HTTP)
  
 Arranque:
