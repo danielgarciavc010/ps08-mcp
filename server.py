@@ -222,13 +222,14 @@ async def consultar_comisarias(
                     {
                         "numero": 1,
                         "id_comisaria": "8693",
-                        "nombre": "MADRID-CENTRO"
+                        "nombre": "MADRID-CENTRO",
+                        "direccion": "Calle Luna 17. MADRID"
                     }
                 ]
             }
         }
     "listado_texto" es la lista ya numerada y escrita; el agente la muestra tal cual
-    al usuario sin transformar nada. "comisarias" solo sirve para mapear el numero
+    al usuario sin transformar nada. "comisarias" sirve para mapear el numero
     elegido por el usuario a su id_comisaria.
     """
     params = {
@@ -254,19 +255,11 @@ async def consultar_comisarias(
     ]
 
     # Lista ya escrita y numerada, lista para mostrar al usuario tal cual.
-    # Usamos guion ASCII normal (no raya larga) y solo nombre para que el modelo
-    # cuantizado pueda copiarla literal sin atascarse con caracteres raros.
+    # Usamos guion ASCII normal (no raya larga) para que el modelo cuantizado
+    # pueda copiarla literal sin atascarse con caracteres raros.
     listado_texto = "\n".join(
         f"{c['numero']}. {c['nombre']} - {c['direccion']}" for c in comisarias
     )
-
-    # Al agente solo le hace falta mapear el numero elegido a su id_comisaria.
-    # Quitamos la direccion del array (ya esta en listado_texto) para no enviar
-    # la lista dos veces y que el modelo no tenga que reconciliar dos versiones.
-    seleccion = [
-        {"numero": c["numero"], "id_comisaria": c["id_comisaria"], "nombre": c["nombre"]}
-        for c in comisarias
-    ]
 
     return {
         "ok": True,
@@ -275,7 +268,7 @@ async def consultar_comisarias(
             "localidad":     id_localidad,
             "total":         len(tab),
             "mostradas":     len(comisarias),
-            "comisarias":    seleccion,
+            "comisarias":    comisarias,
             "listado_texto": listado_texto,
         },
     }
