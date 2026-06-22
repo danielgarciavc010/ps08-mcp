@@ -217,19 +217,19 @@ async def consultar_comisarias(
                 "localidad": 28079,
                 "total": 35,
                 "mostradas": 5,
-                "listado_texto": "1. MADRID-CENTRO — Calle Luna 17\n2. ...",
+                "listado_texto": "1. MADRID-CENTRO - Calle Luna 17\n2. ...",
                 "comisarias": [
                     {
                         "numero": 1,
                         "id_comisaria": "8693",
-                        "nombre": "MADRID-CENTRO",
-                        "direccion": "Calle Luna 17. MADRID"
+                        "nombre": "MADRID-CENTRO"
                     }
                 ]
             }
         }
-    "listado_texto" es la lista ya numerada y escrita; el agente puede mostrarla
-    tal cual al usuario sin transformar nada.
+    "listado_texto" es la lista ya numerada y escrita; el agente la muestra tal cual
+    al usuario sin transformar nada. "comisarias" solo sirve para mapear el numero
+    elegido por el usuario a su id_comisaria.
     """
     params = {
         "codigoPeticion": codigo_peticion,
@@ -254,10 +254,19 @@ async def consultar_comisarias(
     ]
 
     # Lista ya escrita y numerada, lista para mostrar al usuario tal cual.
-    # Asi el agente no tiene que transformar el JSON (lo que a veces lo bloquea).
+    # Usamos guion ASCII normal (no raya larga) y solo nombre para que el modelo
+    # cuantizado pueda copiarla literal sin atascarse con caracteres raros.
     listado_texto = "\n".join(
-        f"{c['numero']}. {c['nombre']} — {c['direccion']}" for c in comisarias
+        f"{c['numero']}. {c['nombre']} - {c['direccion']}" for c in comisarias
     )
+
+    # Al agente solo le hace falta mapear el numero elegido a su id_comisaria.
+    # Quitamos la direccion del array (ya esta en listado_texto) para no enviar
+    # la lista dos veces y que el modelo no tenga que reconciliar dos versiones.
+    seleccion = [
+        {"numero": c["numero"], "id_comisaria": c["id_comisaria"], "nombre": c["nombre"]}
+        for c in comisarias
+    ]
 
     return {
         "ok": True,
@@ -266,7 +275,7 @@ async def consultar_comisarias(
             "localidad":     id_localidad,
             "total":         len(tab),
             "mostradas":     len(comisarias),
-            "comisarias":    comisarias,
+            "comisarias":    seleccion,
             "listado_texto": listado_texto,
         },
     }
