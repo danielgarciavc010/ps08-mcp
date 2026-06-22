@@ -516,8 +516,8 @@ def crear_codigo_peticion() -> dict:
 # ──────────────────────────────────────────────
  # Arranque
  # ──────────────────────────────────────────────
- def main():
- 	mcp.run(transport="stdio")
+def main():
+    mcp.run(transport="stdio")
  
  
 if __name__ == "__main__":
