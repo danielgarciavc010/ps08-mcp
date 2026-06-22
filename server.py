@@ -1,5 +1,5 @@
 """
-MCP Server – kyoe-consultas
+MCP Server - kyoe-consultas
 Transporte: SSE (HTTP)
 
 Arranque:
@@ -12,28 +12,39 @@ Herramientas:
     - alta_cita_dnie
     - anular_cita_dnie
     - modificar_cita_dnie
+    - enviar_sms
+    - crear_codigo_peticion
+    - buscar_codigo_localidad   (NUEVA: nombre -> codigos INE)
 """
 
+import os
+import csv
 import httpx
+import string
+import secrets
+import unicodedata
 from fastmcp import FastMCP
 
 # ──────────────────────────────────────────────
 # Configuración
 # ──────────────────────────────────────────────
-BASE_URL     = "http://rag.kyoe.es"
+BASE_URL = "http://rag.kyoe.es"
 TIMEOUT  = 15.0
 HOST     = "0.0.0.0"
 PORT     = 8000
+
+# CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
+CSV_CODIGOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigos_ine.csv")
 
 mcp = FastMCP(
     name="kyoe-consultas",
     instructions=(
         "Herramientas para consultar comisarías disponibles, consultar, dar de "
         "alta, anular y modificar citas de DNI/NIE/pasaporte a través de los "
-        "servicios de rag.kyoe.es, y para enviar SMS."
+        "servicios de rag.kyoe.es, para enviar SMS y para traducir nombres de "
+        "provincia/localidad a sus códigos INE."
     ),
 )
-
 
 # ──────────────────────────────────────────────
 # Helpers
@@ -62,9 +73,122 @@ async def _request(method: str, endpoint: str, base_url: str = BASE_URL, **kwarg
         return response.text, None
 
 
+def _normalizar(texto: str) -> str:
+    """Pasa a minusculas, quita acentos y espacios sobrantes para comparar
+    nombres de forma flexible (el ciudadano no escribe con tildes perfectas)."""
+    if texto is None:
+        return ""
+    t = texto.strip().lower()
+    t = "".join(
+        c for c in unicodedata.normalize("NFD", t)
+        if unicodedata.category(c) != "Mn"
+    )
+    return " ".join(t.split())
+
+
+# Carga del CSV de codigos INE.
+# Nota: el MCP se levanta en cada peticion, por lo que esto se ejecuta
+# al importar el modulo. El fichero viaja en el repo (ruta relativa).
+def _cargar_codigos():
+    filas = []
+    try:
+        with open(CSV_CODIGOS, encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                filas.append({
+                    "id_provincia": r["id_provincia"],
+                    "provincia":    r["provincia"],
+                    "id_localidad": r["id_localidad"],
+                    "localidad":    r["localidad"],
+                    # campos normalizados para busqueda
+                    "_provincia_norm": _normalizar(r["provincia"]),
+                    "_localidad_norm": _normalizar(r["localidad"]),
+                })
+    except FileNotFoundError:
+        pass
+    return filas
+
+
+_CODIGOS = _cargar_codigos()
+
+
 # ──────────────────────────────────────────────
 # Tools
 # ──────────────────────────────────────────────
+@mcp.tool()
+def buscar_codigo_localidad(localidad: str, provincia: str = "") -> dict:
+    """
+    Traduce el nombre de una localidad (y opcionalmente su provincia) a los
+    códigos INE id_provincia e id_localidad, necesarios para consultar_comisarias.
+
+    La búsqueda ignora mayúsculas y acentos. Si se indica la provincia, se usa
+    para desambiguar localidades con el mismo nombre en distintas provincias.
+
+    Args:
+        localidad: Nombre de la localidad tal como lo dice el ciudadano (ej. 'Merida').
+        provincia: Nombre de la provincia (opcional, ayuda a desambiguar).
+
+    Returns:
+        Encontrado unico:
+            {"ok": true, "data": {"id_provincia": "06", "provincia": "Badajoz",
+                                   "id_localidad": "06083", "localidad": "Mérida"}}
+        No encontrado:
+            {"ok": false, "error": {"code": "NOT_FOUND",
+                                    "message": "No se ha encontrado la localidad '...'."}}
+        Varias coincidencias:
+            {"ok": false, "error": {"code": "MULTIPLE",
+                                    "message": "Hay varias localidades que coinciden.",
+                                    "candidatos": [ {...}, {...} ]}}
+    """
+    if not _CODIGOS:
+        return _error("DATA_ERROR", "No se ha podido cargar la tabla de códigos INE.")
+
+    loc_norm = _normalizar(localidad)
+    if not loc_norm:
+        return _error("INVALID_PARAM", "Debe indicar el nombre de la localidad.")
+
+    prov_norm = _normalizar(provincia)
+
+    # 1) coincidencia exacta de localidad (y provincia si se dio)
+    exactos = [
+        r for r in _CODIGOS
+        if r["_localidad_norm"] == loc_norm
+        and (not prov_norm or r["_provincia_norm"] == prov_norm)
+    ]
+
+    # 2) si no hay exactos, buscar localidad que contenga el texto
+    if not exactos:
+        exactos = [
+            r for r in _CODIGOS
+            if loc_norm in r["_localidad_norm"]
+            and (not prov_norm or r["_provincia_norm"] == prov_norm)
+        ]
+
+    def _limpio(r):
+        return {
+            "id_provincia": r["id_provincia"],
+            "provincia":    r["provincia"],
+            "id_localidad": r["id_localidad"],
+            "localidad":    r["localidad"],
+        }
+
+    if len(exactos) == 1:
+        return {"ok": True, "data": _limpio(exactos[0])}
+
+    if len(exactos) == 0:
+        return _error("NOT_FOUND", f"No se ha encontrado la localidad '{localidad}'.")
+
+    # varias coincidencias -> devolver candidatos para que el agente pregunte
+    candidatos = [_limpio(r) for r in exactos[:15]]
+    return {
+        "ok": False,
+        "error": {
+            "code": "MULTIPLE",
+            "message": "Hay varias localidades que coinciden. Pide al ciudadano que concrete.",
+            "candidatos": candidatos,
+        },
+    }
+
+
 @mcp.tool()
 async def consultar_comisarias(
     codigo_peticion: str,
@@ -305,13 +429,56 @@ async def modificar_cita_dnie(
     return {"ok": True, "data": raw_alta}
 
 
+@mcp.tool()
+async def enviar_sms(destinatario: str, mensaje: str) -> dict:
+    """
+    Envía un SMS a un número de teléfono.
+
+    Args:
+        destinatario: Número de teléfono en formato E.164 (ej. '+34612345678').
+        mensaje:      Texto del SMS a enviar.
+
+    Returns:
+        {
+            "ok": true,
+            "data": {
+                "status": "success",
+                "sid": "SMXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            }
+        }
+    """
+    body = {"to": destinatario, "message": mensaje}
+
+    raw, err = await _request("POST", "/sms/send/", json=body)
+    if err:
+        return err
+
+    return {"ok": True, "data": raw}
+
+
+@mcp.tool()
+def crear_codigo_peticion() -> dict:
+    """
+    Genera un código alfanumérico aleatorio de 20 caracteres (mayúsculas y
+    dígitos), útil como codigoPeticion para las demás tools.
+
+    Returns:
+        {
+            "ok": true,
+            "data": { "codigo": "A1B2C3D4E5F6G7H8I9J0" }
+        }
+    """
+    alfabeto = string.ascii_letters + string.digits
+    codigo = "".join(secrets.choice(alfabeto) for _ in range(20))
+    return {"ok": True, "data": {"codigo": codigo}}
+
 
 # ──────────────────────────────────────────────
 # Arranque
 # ──────────────────────────────────────────────
+
 def main():
     mcp.run(transport="stdio")
-
-
+    
 if __name__ == "__main__":
-    main()
+    mcp.run(transport="stdio")
