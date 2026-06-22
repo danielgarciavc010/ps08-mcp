@@ -217,6 +217,7 @@ async def consultar_comisarias(
                 "localidad": 28079,
                 "total": 35,
                 "mostradas": 5,
+                "listado_texto": "1. MADRID-CENTRO — Calle Luna 17\n2. ...",
                 "comisarias": [
                     {
                         "numero": 1,
@@ -227,6 +228,8 @@ async def consultar_comisarias(
                 ]
             }
         }
+    "listado_texto" es la lista ya numerada y escrita; el agente puede mostrarla
+    tal cual al usuario sin transformar nada.
     """
     params = {
         "codigoPeticion": codigo_peticion,
@@ -250,14 +253,21 @@ async def consultar_comisarias(
         for i, c in enumerate(tab[:MAX_COMISARIAS], start=1)
     ]
 
+    # Lista ya escrita y numerada, lista para mostrar al usuario tal cual.
+    # Asi el agente no tiene que transformar el JSON (lo que a veces lo bloquea).
+    listado_texto = "\n".join(
+        f"{c['numero']}. {c['nombre']} — {c['direccion']}" for c in comisarias
+    )
+
     return {
         "ok": True,
         "data": {
-            "provincia":  id_provincia,
-            "localidad":  id_localidad,
-            "total":      len(tab),
-            "mostradas":  len(comisarias),
-            "comisarias": comisarias,
+            "provincia":     id_provincia,
+            "localidad":     id_localidad,
+            "total":         len(tab),
+            "mostradas":     len(comisarias),
+            "comisarias":    comisarias,
+            "listado_texto": listado_texto,
         },
     }
 
@@ -504,9 +514,9 @@ def crear_codigo_peticion() -> dict:
 # ──────────────────────────────────────────────
 # Arranque
 # ──────────────────────────────────────────────
-
 def main():
     mcp.run(transport="stdio")
-    
+     
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run(transport="sse", host=HOST, port=PORT)
+
