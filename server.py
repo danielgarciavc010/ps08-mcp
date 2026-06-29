@@ -15,6 +15,7 @@ Herramientas:
     - enviar_sms
     - crear_codigo_peticion
     - buscar_codigo_localidad   (NUEVA: nombre -> codigos INE)
+    - consultar_slots_comisaria
 """
 
 import os
@@ -23,6 +24,7 @@ import httpx
 import string
 import secrets
 import unicodedata
+from datetime import datetime
 from fastmcp import FastMCP
 
 # ──────────────────────────────────────────────
@@ -38,6 +40,9 @@ PORT     = 8000
 # a unas pocas, ya limpias y numeradas, para que el agente no se atasque.
 MAX_COMISARIAS = 5
 
+# Maximo de huecos (slots) que se muestran al agente, ya numerados y limpios.
+MAX_SLOTS = 8
+
 # CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
 CSV_CODIGOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigos_ine.csv")
 
@@ -46,8 +51,8 @@ mcp = FastMCP(
     instructions=(
         "Herramientas para consultar comisarías disponibles, consultar, dar de "
         "alta, anular y modificar citas de DNI/NIE/pasaporte a través de los "
-        "servicios de rag.kyoe.es, para enviar SMS y para traducir nombres de "
-        "provincia/localidad a sus códigos INE."
+        "servicios de rag.kyoe.es, para enviar SMS, consultar slots disponibles, "
+        "y para traducir nombres de provincia/localidad a sus códigos INE."
     ),
 )
 
@@ -285,7 +290,7 @@ async def consultar_cita_dnie(
 
     Args:
         codigo_peticion: Identificador de la petición (ej. 'ABC123456').
-        tipo_titular:    Tipo de documento: 'D' (DNI), 'N' (NIE), 'P' (pasaporte).
+        tipo_titular:    Tipo de documento: 'D' (DNI), 'N' (NIE).
         id_titular:      Número de documento (ej. '12345678Z').
 
     Returns:
@@ -299,8 +304,8 @@ async def consultar_cita_dnie(
         }
     """
     tipo_titular = tipo_titular.upper()
-    if tipo_titular not in {"D", "N", "P"}:
-        return _error("INVALID_PARAM", "tipo_titular debe ser 'D', 'N' o 'P'.")
+    if tipo_titular not in {"D", "N"}:
+        return _error("INVALID_PARAM", "tipo_titular debe ser 'D' o 'N'.")
 
     params = {
         "codigoPeticion": codigo_peticion,
@@ -323,7 +328,8 @@ async def consultar_cita_dnie(
 
 
 def _build_alta_body(codigo_peticion, tipo_titular, id_titular,
-                      id_accion="", id_tramite="", id_comisaria="", id_movil=""):
+                      id_accion="", id_tramite="", id_comisaria="", id_movil="",
+                      fecha_cita="", hora_cita=""):
     body = {
         "codigoPeticion": codigo_peticion,
         "tipotitular":    tipo_titular,
@@ -334,6 +340,8 @@ def _build_alta_body(codigo_peticion, tipo_titular, id_titular,
         "idTramite":   id_tramite,
         "idComisaria": id_comisaria,
         "idMovil":     id_movil,
+        "fechaCita":   fecha_cita,
+        "horaCita":    hora_cita,
     }
     body.update({k: v for k, v in opcionales.items() if v})
     return body
@@ -344,6 +352,8 @@ async def alta_cita_dnie(
     codigo_peticion: str,
     tipo_titular: str,
     id_titular: str,
+    fechaCita: str,
+    horaCita: str,
     id_accion: str = "",
     id_tramite: str = "",
     id_comisaria: str = "",
@@ -357,9 +367,11 @@ async def alta_cita_dnie(
         tipo_titular:    Tipo de documento: 'X' (NIE) o 'D' (DNI).
         id_titular:      Número de documento (ej. '12345678Z').
         id_accion:       Código de acción (opcional).
-        id_tramite:      Código de trámite (opcional).
+        id_tramite:      Código de trámite (opcional): 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
         id_comisaria:    Código de la comisaría elegida (opcional).
         id_movil:        Código de unidad móvil (opcional).
+        fechaCita:       Fecha de la cita (ej. '20240601').
+        horaCita:        Hora de la cita (ej. '09:20').
 
     Returns:
         {
@@ -372,7 +384,8 @@ async def alta_cita_dnie(
         return _error("INVALID_PARAM", "tipo_titular debe ser 'X' o 'D'.")
 
     body = _build_alta_body(codigo_peticion, tipo_titular, id_titular,
-                             id_accion, id_tramite, id_comisaria, id_movil)
+                             id_accion, id_tramite, id_comisaria, id_movil,
+                             fecha_cita=fechaCita, hora_cita=horaCita)
 
     raw, err = await _request("POST", "/AltaCitaDnie", json=body)
     if err:
@@ -423,6 +436,8 @@ async def modificar_cita_dnie(
     codigo_peticion: str,
     tipo_titular: str,
     id_titular: str,
+    fechaCita: str,
+    horaCita: str,
     id_accion: str = "",
     id_tramite: str = "",
     id_comisaria: str = "",
@@ -436,8 +451,10 @@ async def modificar_cita_dnie(
         codigo_peticion: Identificador de la petición (ej. 'ABC123456').
         tipo_titular:    Tipo de documento: 'X' (NIE) o 'D' (DNI).
         id_titular:      Número de documento (ej. '12345678Z').
+        fechaCita:       Fecha de la nueva cita (ej. '20240601').
+        horaCita:        Hora de la nueva cita (ej. '09:20').
         id_accion:       Código de acción para la nueva cita (opcional).
-        id_tramite:      Código de trámite para la nueva cita (opcional).
+        id_tramite:      Código de trámite para la nueva cita (opcional). 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
         id_comisaria:    Código de la comisaría para la nueva cita (opcional).
         id_movil:        Código de unidad móvil para la nueva cita (opcional).
 
@@ -461,7 +478,8 @@ async def modificar_cita_dnie(
         return err
 
     body_alta = _build_alta_body(codigo_peticion, tipo_titular, id_titular,
-                                  id_accion, id_tramite, id_comisaria, id_movil)
+                                  id_accion, id_tramite, id_comisaria, id_movil,
+                                  fecha_cita=fechaCita, hora_cita=horaCita)
     raw_alta, err = await _request("POST", "/AltaCitaDnie", json=body_alta)
     if err:
         return err
@@ -496,6 +514,80 @@ async def enviar_sms(destinatario: str, mensaje: str) -> dict:
     return {"ok": True, "data": raw}
 
 
+def _parse_slot(start_time: str):
+    """De un startTime ISO devuelve (fechaCita 'AAAAMMDD', horaCita 'HH:MM', display)."""
+    try:
+        dt = datetime.fromisoformat(str(start_time).replace("Z", "").strip())
+        return dt.strftime("%Y%m%d"), dt.strftime("%H:%M"), dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return "", "", str(start_time)
+
+
+@mcp.tool()
+async def consultar_slots_comisaria(
+    id_comisaria: str,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    """
+    Devuelve los huecos (slots) de una comisaría, ya numerados y limpios
+    (como maximo MAX_SLOTS), en un rango maximo de 5 dias. Todos los slots que
+    devuelve la API se consideran disponibles.
+
+    Args:
+        id_comisaria: Identificador de la comisaría.
+        start_date: Fecha de inicio (incluida) en formato YYYY-MM-DD.
+        end_date: Fecha de fin (incluida) en formato YYYY-MM-DD. Máximo 5 días desde start_date.
+
+    Returns:
+        {
+            "ok": true,
+            "data": {
+                "total": 12,
+                "mostrados": 8,
+                "listado_texto": "1. 02/07/2026 09:20\n2. 02/07/2026 09:50\n...",
+                "slots": [
+                    {"numero": 1, "fechaCita": "20260702", "horaCita": "09:20", "cuando": "02/07/2026 09:20"}
+                ]
+            }
+        }
+    "listado_texto" ya esta numerado y escrito; el agente lo muestra tal cual.
+    "slots" sirve para mapear el numero elegido a su fechaCita y horaCita.
+    """
+    params = {
+        "startDate": start_date,
+        "endDate": end_date,
+    }
+
+    raw, err = await _request("GET", f"/offices/{id_comisaria}/slots", params=params)
+    if err:
+        return err
+
+    disponibles = raw.get("slots") or [] if isinstance(raw, dict) else []
+
+    slots = []
+    for i, s in enumerate(disponibles[:MAX_SLOTS], start=1):
+        fecha, hora, cuando = _parse_slot(s.get("startTime", ""))
+        slots.append({
+            "numero":    i,
+            "fechaCita": fecha,
+            "horaCita":  hora,
+            "cuando":    cuando,
+        })
+
+    listado_texto = "\n".join(f"{x['numero']}. {x['cuando']}" for x in slots)
+
+    return {
+        "ok": True,
+        "data": {
+            "total":         len(disponibles),
+            "mostrados":     len(slots),
+            "slots":         slots,
+            "listado_texto": listado_texto,
+        },
+    }
+
+
 @mcp.tool()
 def crear_codigo_peticion() -> dict:
     """
@@ -521,4 +613,4 @@ def main():
  
  
 if __name__ == "__main__":
- 	main()
+    main()
