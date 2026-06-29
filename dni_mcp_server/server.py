@@ -311,7 +311,7 @@ async def consultar_cita_dnie(
             "ok": true,
             "data": {
                 "tipo_documento": "D",
-                "numero_documento": "12345678Z",
+                "numero_documento": "...",
                 "cita": { ...campos del servicio... }
             }
         }
