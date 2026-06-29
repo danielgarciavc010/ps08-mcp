@@ -24,10 +24,8 @@ import httpx
 import string
 import secrets
 import unicodedata
-from pathlib import Path
 from datetime import datetime
 from fastmcp import FastMCP
-from importlib.resources import files
 
 # ──────────────────────────────────────────────
 # Configuración
@@ -46,7 +44,7 @@ MAX_COMISARIAS = 5
 MAX_SLOTS = 8
 
 # CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
-CSV_CODIGOS = files("dni_mcp_server").joinpath("codigos_ine.csv")
+CSV_CODIGOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigos_ine.csv")
 
 mcp = FastMCP(
     name="kyoe-consultas",
@@ -204,24 +202,27 @@ def buscar_codigo_localidad(localidad: str, provincia: str = "") -> dict:
 @mcp.tool()
 async def consultar_comisarias(
     codigo_peticion: str,
-    id_provincia: int,
-    id_localidad: int,
+    id_provincia: str = "",
+    id_localidad: str = "",
 ) -> dict:
     """
-    Devuelve las comisarías disponibles para tramitar DNI/NIE/pasaporte
-    en una provincia y localidad concretas.
+    Devuelve las comisarías disponibles para tramitar DNI/NIE/pasaporte.
+
+    Se debe indicar EXACTAMENTE UNO de los dos: id_localidad (si el ciudadano
+    pidió una localidad concreta) o id_provincia (si pidió toda una provincia).
+    Nunca los dos a la vez.
 
     Args:
         codigo_peticion: Identificador de la petición (ej. 'ABC123').
-        id_provincia:    Código numérico de provincia  (ej. 28 → Madrid).
-        id_localidad:    Código numérico de localidad  (ej. 28079 → Madrid capital).
+        id_provincia:    Código INE de provincia (ej. '28' → Madrid). Solo si NO se da localidad.
+        id_localidad:    Código INE de localidad (ej. '28079' → Madrid capital). Solo si NO se da provincia.
 
     Returns (lista ya recortada y limpia, como maximo MAX_COMISARIAS):
         {
             "ok": true,
             "data": {
-                "provincia": 28,
-                "localidad": 28079,
+                "provincia": "",
+                "localidad": "28079",
                 "total": 35,
                 "mostradas": 5,
                 "listado_texto": "1. MADRID-CENTRO - Calle Luna 17\n2. ...",
@@ -239,11 +240,21 @@ async def consultar_comisarias(
     al usuario sin transformar nada. "comisarias" sirve para mapear el numero
     elegido por el usuario a su id_comisaria.
     """
-    params = {
-        "codigoPeticion": codigo_peticion,
-        "idProvincia":    id_provincia,
-        "idLocalidad":    id_localidad,
-    }
+    id_provincia = str(id_provincia).strip()
+    id_localidad = str(id_localidad).strip()
+
+    if id_provincia and id_localidad:
+        return _error("INVALID_PARAM",
+                      "Indica solo id_provincia o solo id_localidad, no ambos.")
+    if not id_provincia and not id_localidad:
+        return _error("INVALID_PARAM",
+                      "Debes indicar id_provincia o id_localidad.")
+
+    params = {"codigoPeticion": codigo_peticion}
+    if id_localidad:
+        params["idLocalidad"] = id_localidad
+    else:
+        params["idProvincia"] = id_provincia
 
     raw, err = await _request("GET", "/ConsultarComisarias", params=params)
     if err:
@@ -284,35 +295,35 @@ async def consultar_comisarias(
 @mcp.tool()
 async def consultar_cita_dnie(
     codigo_peticion: str,
-    tipo_titular: str,
-    id_titular: str,
+    tipo_documento: str,
+    numero_documento: str,
 ) -> dict:
     """
     Consulta la cita de DNI/NIE/pasaporte asociada a un titular.
 
     Args:
-        codigo_peticion: Identificador de la petición (ej. 'ABC123456').
-        tipo_titular:    Tipo de documento: 'D' (DNI), 'N' (NIE).
-        id_titular:      Número de documento (ej. '12345678Z').
+        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
+        tipo_documento:   Tipo de documento: 'D' (DNI), 'N' (NIE).
+        numero_documento: Número de documento (ej. '12345678Z').
 
     Returns:
         {
             "ok": true,
             "data": {
-                "tipo_titular": "D",
-                "id_titular": "12345678Z",
+                "tipo_documento": "D",
+                "numero_documento": "12345678Z",
                 "cita": { ...campos del servicio... }
             }
         }
     """
-    tipo_titular = tipo_titular.upper()
-    if tipo_titular not in {"D", "N"}:
-        return _error("INVALID_PARAM", "tipo_titular debe ser 'D' o 'N'.")
+    tipo_documento = tipo_documento.upper()
+    if tipo_documento not in {"D", "N"}:
+        return _error("INVALID_PARAM", "tipo_documento debe ser 'D' o 'N'.")
 
     params = {
         "codigoPeticion": codigo_peticion,
-        "tipotitular":    tipo_titular,
-        "Idtitular":      id_titular,
+        "tipotitular":    tipo_documento,
+        "Idtitular":      numero_documento,
     }
 
     raw, err = await _request("GET", "/ConsultarCitaDnie", params=params)
@@ -322,28 +333,25 @@ async def consultar_cita_dnie(
     return {
         "ok": True,
         "data": {
-            "tipo_titular": tipo_titular,
-            "id_titular":   id_titular,
-            "cita":         raw,
+            "tipo_documento":   tipo_documento,
+            "numero_documento": numero_documento,
+            "cita":             raw,
         },
     }
 
 
-def _build_alta_body(codigo_peticion, tipo_titular, id_titular,
-                      id_accion="", id_tramite="", id_comisaria="", id_movil="",
-                      fecha_cita="", hora_cita=""):
+def _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
+                      id_comisaria, id_tramite="", fecha_cita="", hora_cita=""):
     body = {
         "codigoPeticion": codigo_peticion,
-        "tipotitular":    tipo_titular,
-        "Idtitular":      id_titular,
+        "tipotitular":    tipo_documento,
+        "Idtitular":      numero_documento,
+        "idComisaria":    id_comisaria,
     }
     opcionales = {
-        "idAccion":    id_accion,
-        "idTramite":   id_tramite,
-        "idComisaria": id_comisaria,
-        "idMovil":     id_movil,
-        "fechaCita":   fecha_cita,
-        "horaCita":    hora_cita,
+        "idTramite": id_tramite,
+        "fechaCita": fecha_cita,
+        "horaCita":  hora_cita,
     }
     body.update({k: v for k, v in opcionales.items() if v})
     return body
@@ -352,28 +360,24 @@ def _build_alta_body(codigo_peticion, tipo_titular, id_titular,
 @mcp.tool()
 async def alta_cita_dnie(
     codigo_peticion: str,
-    tipo_titular: str,
-    id_titular: str,
+    tipo_documento: str,
+    numero_documento: str,
+    id_comisaria: str,
     fechaCita: str,
     horaCita: str,
-    id_accion: str = "",
     id_tramite: str = "",
-    id_comisaria: str = "",
-    id_movil: str = "",
 ) -> dict:
     """
     Da de alta una cita de DNIe/pasaporte para un titular.
 
     Args:
-        codigo_peticion: Identificador de la petición (ej. 'ABC123456').
-        tipo_titular:    Tipo de documento: 'X' (NIE) o 'D' (DNI).
-        id_titular:      Número de documento (ej. '12345678Z').
-        id_accion:       Código de acción (opcional).
-        id_tramite:      Código de trámite (opcional): 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
-        id_comisaria:    Código de la comisaría elegida (opcional).
-        id_movil:        Código de unidad móvil (opcional).
-        fechaCita:       Fecha de la cita (ej. '20240601').
-        horaCita:        Hora de la cita (ej. '09:20').
+        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
+        tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
+        numero_documento: Número de documento (ej. '12345678Z').
+        id_comisaria:     Código de la comisaría elegida (obligatorio).
+        fechaCita:        Fecha de la cita (ej. '20240601').
+        horaCita:         Hora de la cita (ej. '09:20').
+        id_tramite:       Código de trámite (opcional): 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
 
     Returns:
         {
@@ -381,12 +385,12 @@ async def alta_cita_dnie(
             "data": { ...campos del servicio (cita asignada)... }
         }
     """
-    tipo_titular = tipo_titular.upper()
-    if tipo_titular not in {"X", "D"}:
-        return _error("INVALID_PARAM", "tipo_titular debe ser 'X' o 'D'.")
+    tipo_documento = tipo_documento.upper()
+    if tipo_documento not in {"X", "D"}:
+        return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
-    body = _build_alta_body(codigo_peticion, tipo_titular, id_titular,
-                             id_accion, id_tramite, id_comisaria, id_movil,
+    body = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
+                             id_comisaria, id_tramite,
                              fecha_cita=fechaCita, hora_cita=horaCita)
 
     raw, err = await _request("POST", "/AltaCitaDnie", json=body)
@@ -399,16 +403,16 @@ async def alta_cita_dnie(
 @mcp.tool()
 async def anular_cita_dnie(
     codigo_peticion: str,
-    tipo_titular: str,
-    id_titular: str,
+    tipo_documento: str,
+    numero_documento: str,
 ) -> dict:
     """
     Anula la cita de DNIe/pasaporte asociada a un titular.
 
     Args:
-        codigo_peticion: Identificador de la petición (ej. 'ABC123456').
-        tipo_titular:    Tipo de documento: 'X' (NIE) o 'D' (DNI).
-        id_titular:      Número de documento (ej. '12345678Z').
+        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
+        tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
+        numero_documento: Número de documento (ej. '12345678Z').
 
     Returns:
         {
@@ -416,14 +420,14 @@ async def anular_cita_dnie(
             "data": { ...campos del servicio (cita anulada)... }
         }
     """
-    tipo_titular = tipo_titular.upper()
-    if tipo_titular not in {"X", "D"}:
-        return _error("INVALID_PARAM", "tipo_titular debe ser 'X' o 'D'.")
+    tipo_documento = tipo_documento.upper()
+    if tipo_documento not in {"X", "D"}:
+        return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
     body = {
         "codigoPeticion": codigo_peticion,
-        "tipotitular":    tipo_titular,
-        "Idtitular":      id_titular,
+        "tipotitular":    tipo_documento,
+        "Idtitular":      numero_documento,
     }
 
     raw, err = await _request("PUT", "/AnularCitaDnie", json=body)
@@ -436,29 +440,25 @@ async def anular_cita_dnie(
 @mcp.tool()
 async def modificar_cita_dnie(
     codigo_peticion: str,
-    tipo_titular: str,
-    id_titular: str,
+    tipo_documento: str,
+    numero_documento: str,
+    id_comisaria: str,
     fechaCita: str,
     horaCita: str,
-    id_accion: str = "",
     id_tramite: str = "",
-    id_comisaria: str = "",
-    id_movil: str = "",
 ) -> dict:
     """
     Modifica la cita de un titular: anula la cita existente y da de alta una
     nueva con los datos indicados.
 
     Args:
-        codigo_peticion: Identificador de la petición (ej. 'ABC123456').
-        tipo_titular:    Tipo de documento: 'X' (NIE) o 'D' (DNI).
-        id_titular:      Número de documento (ej. '12345678Z').
-        fechaCita:       Fecha de la nueva cita (ej. '20240601').
-        horaCita:        Hora de la nueva cita (ej. '09:20').
-        id_accion:       Código de acción para la nueva cita (opcional).
-        id_tramite:      Código de trámite para la nueva cita (opcional). 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
-        id_comisaria:    Código de la comisaría para la nueva cita (opcional).
-        id_movil:        Código de unidad móvil para la nueva cita (opcional).
+        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
+        tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
+        numero_documento: Número de documento (ej. '12345678Z').
+        id_comisaria:     Código de la comisaría para la nueva cita (obligatorio).
+        fechaCita:        Fecha de la nueva cita (ej. '20240601').
+        horaCita:         Hora de la nueva cita (ej. '09:20').
+        id_tramite:       Código de trámite para la nueva cita (opcional). 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
 
     Returns:
         {
@@ -466,21 +466,21 @@ async def modificar_cita_dnie(
             "data": { ...respuesta AltaCitaDnie de la nueva cita... }
         }
     """
-    tipo_titular = tipo_titular.upper()
-    if tipo_titular not in {"X", "D"}:
-        return _error("INVALID_PARAM", "tipo_titular debe ser 'X' o 'D'.")
+    tipo_documento = tipo_documento.upper()
+    if tipo_documento not in {"X", "D"}:
+        return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
     body_anular = {
         "codigoPeticion": codigo_peticion,
-        "tipotitular":    tipo_titular,
-        "Idtitular":      id_titular,
+        "tipotitular":    tipo_documento,
+        "Idtitular":      numero_documento,
     }
     raw_anular, err = await _request("PUT", "/AnularCitaDnie", json=body_anular)
     if err:
         return err
 
-    body_alta = _build_alta_body(codigo_peticion, tipo_titular, id_titular,
-                                  id_accion, id_tramite, id_comisaria, id_movil,
+    body_alta = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
+                                  id_comisaria, id_tramite,
                                   fecha_cita=fechaCita, hora_cita=horaCita)
     raw_alta, err = await _request("POST", "/AltaCitaDnie", json=body_alta)
     if err:
@@ -615,4 +615,4 @@ def main():
  
  
 if __name__ == "__main__":
-    main()
+ 
