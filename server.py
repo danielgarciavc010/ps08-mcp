@@ -44,7 +44,7 @@ MAX_COMISARIAS = 5
 MAX_SLOTS = 8
 
 # CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
-CSV_CODIGOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigos_ine.csv")
+CSV_CODIGOS = Path(__file__).parent / "codigos_ine.csv"
 
 mcp = FastMCP(
     name="kyoe-consultas",
