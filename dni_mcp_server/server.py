@@ -303,14 +303,14 @@ async def consultar_cita_dnie(
 
     Args:
         codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
-        tipo_documento:   Tipo de documento: 'D' (DNI), 'N' (NIE).
+        tipo_documento:   Tipo de documento
         numero_documento: Número de documento
 
     Returns:
         {
             "ok": true,
             "data": {
-                "tipo_documento": "D",
+                "tipo_documento": "...",
                 "numero_documento": "...",
                 "cita": { ...campos del servicio... }
             }
