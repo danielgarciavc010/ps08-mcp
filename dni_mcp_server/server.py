@@ -27,6 +27,7 @@ import unicodedata
 from pathlib import Path
 from datetime import datetime
 from fastmcp import FastMCP
+from importlib.resources import files
 
 # ──────────────────────────────────────────────
 # Configuración
@@ -45,7 +46,7 @@ MAX_COMISARIAS = 5
 MAX_SLOTS = 8
 
 # CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
-CSV_CODIGOS = Path(__file__).parent / "codigos_ine.csv"
+CSV_CODIGOS = files("dni_mcp_server").joinpath("codigos_ine.csv")
 
 mcp = FastMCP(
     name="kyoe-consultas",
