@@ -19,4 +19,4 @@ build-backend = "setuptools.build_meta"
 py-modules = ["server"]
 
 [tool.setuptools.data-files]
-"." = ["codigos_ine.csv"]
+"*" = ["codigos_ine.csv"]
