@@ -316,6 +316,12 @@ async def consultar_cita_dnie(
             }
         }
     """
+    if not numero_documento or not numero_documento.strip():
+        return _error(
+            "FALTA_DATO",
+            "Falta el numero de documento. Preguntaselo al ciudadano antes de llamar a esta herramienta.",
+        )
+
     tipo_documento = tipo_documento.upper()
     if tipo_documento not in {"D", "N"}:
         return _error("INVALID_PARAM", "tipo_documento debe ser 'D' o 'N'.")
