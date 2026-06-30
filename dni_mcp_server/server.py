@@ -323,8 +323,8 @@ async def consultar_cita_dnie(
         )
 
     tipo_documento = tipo_documento.upper()
-    if tipo_documento not in {"D", "N"}:
-        return _error("INVALID_PARAM", "tipo_documento debe ser 'D' o 'N'.")
+    if tipo_documento not in {"D", "X"}:
+        return _error("INVALID_PARAM", "tipo_documento debe ser 'D' o 'X'.")
 
     params = {
         "codigoPeticion": codigo_peticion,
@@ -346,12 +346,13 @@ async def consultar_cita_dnie(
     }
 
 
+
 def _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
                       id_comisaria, fecha_cita, hora_cita, id_tramite=""):
     body = {
         "codigoPeticion": codigo_peticion,
         "tipotitular":    tipo_documento,
-        "Idtitular":      numero_documento,
+        "idtitular":      numero_documento,
         "idComisaria":    id_comisaria,
         "fechaCita":      fecha_cita,
         "horaCita":       hora_cita,
@@ -511,7 +512,7 @@ async def enviar_sms(destinatario: str, mensaje: str) -> dict:
     """
     body = {"to": destinatario, "message": mensaje}
 
-    raw, err = await _request("POST", "/sms/send/", json=body)
+    raw, err = await _request("POST", "/sms/send", json=body)
     if err:
         return err
 
@@ -552,6 +553,18 @@ async def consultar_slots_comisaria(
         start_date: Fecha de inicio (incluida). Formato AAAAMMDD.
         end_date: Fecha de fin (incluida). Formato AAAAMMDD. Máximo 5 días desde start_date.
 
+    Returns:
+        {
+            "ok": true,
+            "data": {
+                "total": 12,
+                "mostrados": 8,
+                "listado_texto": "...",
+                "slots": [
+                    {"numero": 1, "fechaCita": "...", "horaCita": "...", "cuando": "..."}
+                ]
+            }
+        }
     "listado_texto" ya esta numerado y escrito; el agente lo muestra tal cual.
     "slots" sirve para mapear el numero elegido a su fechaCita y horaCita.
     """
