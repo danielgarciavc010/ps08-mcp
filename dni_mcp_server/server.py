@@ -552,18 +552,6 @@ async def consultar_slots_comisaria(
         start_date: Fecha de inicio (incluida). Formato AAAAMMDD.
         end_date: Fecha de fin (incluida). Formato AAAAMMDD. Máximo 5 días desde start_date.
 
-    Returns:
-        {
-            "ok": true,
-            "data": {
-                "total": 12,
-                "mostrados": 8,
-                "listado_texto": "1. 02/07/2026 09:20\n2. 02/07/2026 09:50\n...",
-                "slots": [
-                    {"numero": 1, "fechaCita": "20260702", "horaCita": "0920", "cuando": "02/07/2026 09:20"}
-                ]
-            }
-        }
     "listado_texto" ya esta numerado y escrito; el agente lo muestra tal cual.
     "slots" sirve para mapear el numero elegido a su fechaCita y horaCita.
     """
