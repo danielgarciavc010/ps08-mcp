@@ -347,19 +347,17 @@ async def consultar_cita_dnie(
 
 
 def _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
-                      id_comisaria, id_tramite="", fecha_cita="", hora_cita=""):
+                      id_comisaria, fecha_cita, hora_cita, id_tramite=""):
     body = {
         "codigoPeticion": codigo_peticion,
         "tipotitular":    tipo_documento,
         "Idtitular":      numero_documento,
         "idComisaria":    id_comisaria,
+        "fechaCita":      fecha_cita,
+        "horaCita":       hora_cita,
     }
-    opcionales = {
-        "idTramite": id_tramite,
-        "fechaCita": fecha_cita,
-        "horaCita":  hora_cita,
-    }
-    body.update({k: v for k, v in opcionales.items() if v})
+    if id_tramite:
+        body["idTramite"] = id_tramite
     return body
 
 
@@ -381,8 +379,8 @@ async def alta_cita_dnie(
         tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
         numero_documento: Número de documento (ej. '12345678Z').
         id_comisaria:     Código de la comisaría elegida (obligatorio).
-        fechaCita:        Fecha de la cita (ej. '20240601').
-        horaCita:         Hora de la cita (ej. '09:20').
+        fechaCita:        Fecha de la cita. Formato AAAAMMDD
+        horaCita:         Hora de la cita. Formato HHMM
         id_tramite:       Código de trámite (opcional): 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
 
     Returns:
@@ -396,8 +394,7 @@ async def alta_cita_dnie(
         return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
     body = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
-                             id_comisaria, id_tramite,
-                             fecha_cita=fechaCita, hora_cita=horaCita)
+                             id_comisaria, fechaCita, horaCita, id_tramite)
 
     raw, err = await _request("POST", "/AltaCitaDnie", json=body)
     if err:
@@ -462,8 +459,8 @@ async def modificar_cita_dnie(
         tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
         numero_documento: Número de documento (ej. '12345678Z').
         id_comisaria:     Código de la comisaría para la nueva cita (obligatorio).
-        fechaCita:        Fecha de la nueva cita (ej. '20240601').
-        horaCita:         Hora de la nueva cita (ej. '09:20').
+        fechaCita:        Fecha de la nueva cita. Formato AAAAMMDD
+        horaCita:         Hora de la nueva cita. Formato HHMM
         id_tramite:       Código de trámite para la nueva cita (opcional). 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
 
     Returns:
@@ -486,8 +483,7 @@ async def modificar_cita_dnie(
         return err
 
     body_alta = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
-                                  id_comisaria, id_tramite,
-                                  fecha_cita=fechaCita, hora_cita=horaCita)
+                                  id_comisaria, fechaCita, horaCita, id_tramite)
     raw_alta, err = await _request("POST", "/AltaCitaDnie", json=body_alta)
     if err:
         return err
@@ -523,12 +519,21 @@ async def enviar_sms(destinatario: str, mensaje: str) -> dict:
 
 
 def _parse_slot(start_time: str):
-    """De un startTime ISO devuelve (fechaCita 'AAAAMMDD', horaCita 'HH:MM', display)."""
+    """De un startTime ISO devuelve (fechaCita 'AAAAMMDD', horaCita 'HHMM', display)."""
     try:
         dt = datetime.fromisoformat(str(start_time).replace("Z", "").strip())
-        return dt.strftime("%Y%m%d"), dt.strftime("%H:%M"), dt.strftime("%d/%m/%Y %H:%M")
+        return dt.strftime("%Y%m%d"), dt.strftime("%H%M"), dt.strftime("%d/%m/%Y %H:%M")
     except Exception:
         return "", "", str(start_time)
+
+
+def _fecha_a_iso(aaaammdd: str) -> str:
+    """Convierte una fecha 'AAAAMMDD' a 'YYYY-MM-DD' (formato que espera la API
+    de slots). Si ya viene en otro formato, la devuelve tal cual."""
+    s = str(aaaammdd).strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
 
 
 @mcp.tool()
@@ -544,8 +549,8 @@ async def consultar_slots_comisaria(
 
     Args:
         id_comisaria: Identificador de la comisaría.
-        start_date: Fecha de inicio (incluida) en formato YYYY-MM-DD.
-        end_date: Fecha de fin (incluida) en formato YYYY-MM-DD. Máximo 5 días desde start_date.
+        start_date: Fecha de inicio (incluida). Formato AAAAMMDD.
+        end_date: Fecha de fin (incluida). Formato AAAAMMDD. Máximo 5 días desde start_date.
 
     Returns:
         {
@@ -555,7 +560,7 @@ async def consultar_slots_comisaria(
                 "mostrados": 8,
                 "listado_texto": "1. 02/07/2026 09:20\n2. 02/07/2026 09:50\n...",
                 "slots": [
-                    {"numero": 1, "fechaCita": "20260702", "horaCita": "09:20", "cuando": "02/07/2026 09:20"}
+                    {"numero": 1, "fechaCita": "20260702", "horaCita": "0920", "cuando": "02/07/2026 09:20"}
                 ]
             }
         }
@@ -563,8 +568,8 @@ async def consultar_slots_comisaria(
     "slots" sirve para mapear el numero elegido a su fechaCita y horaCita.
     """
     params = {
-        "startDate": start_date,
-        "endDate": end_date,
+        "startDate": _fecha_a_iso(start_date),
+        "endDate": _fecha_a_iso(end_date),
     }
 
     raw, err = await _request("GET", f"/offices/{id_comisaria}/slots", params=params)
@@ -617,9 +622,11 @@ def crear_codigo_peticion() -> dict:
  # Arranque
  # ──────────────────────────────────────────────
 def main():
-    mcp.run(transport="stdio")
+    mcp.run(transport="sse", host=HOST, port=PORT)
  
  
 if __name__ == "__main__":
     main()
+
+
  
