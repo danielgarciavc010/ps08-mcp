@@ -398,30 +398,11 @@ async def alta_cita_dnie(
     if err:
         return err
 
-    # La respuesta del alta trae la cita confirmada (incluido el numero de cita).
-    tiene, cita = _parsear_cita(raw)
-    if not tiene:
-        # El servicio no ha devuelto los datos; usamos los que se han pedido.
-        fecha_disp, hora_disp = _display_fecha_hora(fechaCita, horaCita)
-        cita = {
-            "fecha":       fecha_disp,
-            "hora":        hora_disp,
-            "tramite":     id_tramite,
-            "comisaria":   "",
-            "direccion":   "",
-            "numero_cita": "",
-        }
-
-    resumen_texto = f"Cita creada correctamente {_frase_cita(cita)}."
-    if cita["numero_cita"]:
-        resumen_texto += f" Numero de cita: {cita['numero_cita']}."
-
     return {
         "ok": True,
         "data": {
             "creada":        True,
-            "cita":          cita,
-            "resumen_texto": resumen_texto,
+            "resumen_texto": "Cita creada correctamente.",
         },
     }
 
@@ -475,6 +456,7 @@ async def anular_cita_dnie(
             "resumen_texto": "Cita anulada correctamente.",
         },
     }
+
 
 @mcp.tool()
 async def modificar_cita_dnie(
@@ -532,35 +514,20 @@ async def modificar_cita_dnie(
     if err:
         return err
 
-    # La respuesta del alta trae la cita confirmada (incluido el numero de cita).
-    tiene, cita = _parsear_cita(raw_alta)
-    if not tiene:
-        fecha_disp, hora_disp = _display_fecha_hora(fechaCita, horaCita)
-        cita = {
-            "fecha":       fecha_disp,
-            "hora":        hora_disp,
-            "tramite":     id_tramite,
-            "comisaria":   "",
-            "direccion":   "",
-            "numero_cita": "",
-        }
-
     if tenia_cita:
-        resumen = f"Cita modificada correctamente: ahora es {_frase_cita(cita)}."
+        resumen = "Cita modificada correctamente."
     else:
-        resumen = f"No había cita previa; se ha creado una nueva {_frase_cita(cita)}."
-    if cita["numero_cita"]:
-        resumen += f" Numero de cita: {cita['numero_cita']}."
+        resumen = "No había cita previa; se ha creado una nueva cita."
 
     return {
         "ok": True,
         "data": {
             "modificada":    tenia_cita,
             "creada":        not tenia_cita,
-            "cita":          cita,
             "resumen_texto": resumen,
         },
     }
+
 
 
 @mcp.tool()
