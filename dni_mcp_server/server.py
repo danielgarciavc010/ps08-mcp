@@ -48,8 +48,7 @@ mcp = FastMCP(
     instructions=(
         "Herramientas para consultar comisarías disponibles, consultar, dar de "
         "alta, anular y modificar citas de DNI/NIE/pasaporte a través de los "
-        "servicios de rag.kyoe.es, para enviar SMS, consultar slots disponibles, "
-        "y para traducir nombres de provincia/localidad a sus códigos INE."
+        "servicios de rag.kyoe.es, para enviar SMS y consultar slots disponibles."
     ),
 )
 
@@ -58,6 +57,29 @@ mcp = FastMCP(
 # ──────────────────────────────────────────────
 def _error(code: str, message: str) -> dict:
     return {"ok": False, "error": {"code": code, "message": message}}
+
+
+def _validar_requeridos(**campos):
+    """Devuelve un _error si algun campo requerido viene vacio; None si estan
+    todos. Evita que el agente llame a la API con parametros en blanco."""
+    for nombre, valor in campos.items():
+        if not str(valor or "").strip():
+            return _error(
+                "FALTA_DATO",
+                f"Falta el dato '{nombre}'. Preguntaselo al ciudadano antes de continuar.",
+            )
+    return None
+
+
+def _validar_id_comisaria(id_comisaria: str):
+    """Devuelve un _error si el id de comisaria no es numerico; None si es
+    valido. Los codigos de comisaria son siempre digitos (p. ej. '0002')."""
+    if not str(id_comisaria or "").strip().isdigit():
+        return _error(
+            "INVALID_PARAM",
+            "El id_comisaria debe estar formado solo por digitos.",
+        )
+    return None
 
 
 async def _request(method: str, endpoint: str, base_url: str = BASE_URL, **kwargs):
@@ -121,98 +143,53 @@ _CODIGOS = _cargar_codigos()
 # ──────────────────────────────────────────────
 # Tools
 # ──────────────────────────────────────────────
-@mcp.tool()
-def buscar_codigo_localidad(localidad: str, provincia: str = "") -> dict:
-    """
-    Traduce un nombre de localidad a sus códigos INE (id_provincia, id_localidad).
-
-    Args:
-        localidad: Nombre de la localidad.
-        provincia: Nombre de la provincia (opcional, desambigua).
-    """
+def _resolver_localidad(localidad: str):
+    """Resuelve un nombre de localidad a su fila de codigos INE.
+    Los nombres de localidad son unicos, asi que se busca por coincidencia exacta
+    (normalizada: sin tildes ni mayusculas). Devuelve (fila, error): si existe,
+    fila es el dict y error None; si no, fila es None y error es un _error(...)."""
     if not _CODIGOS:
-        return _error("DATA_ERROR", "No se ha podido cargar la tabla de códigos INE.")
+        return None, _error("DATA_ERROR", "No se ha podido cargar la tabla de códigos INE.")
 
     loc_norm = _normalizar(localidad)
     if not loc_norm:
-        return _error("INVALID_PARAM", "Debe indicar el nombre de la localidad.")
+        return None, _error("INVALID_PARAM", "Debe indicar el nombre de la localidad.")
 
-    prov_norm = _normalizar(provincia)
+    fila = next((r for r in _CODIGOS if r["_localidad_norm"] == loc_norm), None)
+    if fila is None:
+        return None, _error("NOT_FOUND", f"No se ha encontrado la localidad '{localidad}'.")
 
-    # 1) coincidencia exacta de localidad (y provincia si se dio)
-    exactos = [
-        r for r in _CODIGOS
-        if r["_localidad_norm"] == loc_norm
-        and (not prov_norm or r["_provincia_norm"] == prov_norm)
-    ]
-
-    # 2) si no hay exactos, buscar localidad que contenga el texto
-    if not exactos:
-        exactos = [
-            r for r in _CODIGOS
-            if loc_norm in r["_localidad_norm"]
-            and (not prov_norm or r["_provincia_norm"] == prov_norm)
-        ]
-
-    def _limpio(r):
-        return {
-            "id_provincia": r["id_provincia"],
-            "provincia":    r["provincia"],
-            "id_localidad": r["id_localidad"],
-            "localidad":    r["localidad"],
-        }
-
-    if len(exactos) == 1:
-        return {"ok": True, "data": _limpio(exactos[0])}
-
-    if len(exactos) == 0:
-        return _error("NOT_FOUND", f"No se ha encontrado la localidad '{localidad}'.")
-
-    # varias coincidencias -> devolver candidatos para que el agente pregunte
-    candidatos = [_limpio(r) for r in exactos[:15]]
     return {
-        "ok": False,
-        "error": {
-            "code": "MULTIPLE",
-            "message": "Hay varias localidades que coinciden. Pide al ciudadano que concrete.",
-            "candidatos": candidatos,
-        },
-    }
+        "id_provincia": fila["id_provincia"],
+        "provincia":    fila["provincia"],
+        "id_localidad": fila["id_localidad"],
+        "localidad":    fila["localidad"],
+    }, None
 
 
 @mcp.tool()
 async def consultar_comisarias(
     codigo_peticion: str,
-    id_provincia: str = "",
-    id_localidad: str = "",
+    localidad: str,
 ) -> dict:
     """
-    Lista las comisarías disponibles para tramitar DNI/NIE/pasaporte.
-    Indica solo uno: id_localidad o id_provincia, nunca ambos.
+    Lista las comisarías disponibles para tramitar DNI/NIE/pasaporte en una localidad.
 
     Args:
         codigo_peticion: Identificador de la petición.
-        id_provincia: Código INE de provincia. Solo si no hay localidad.
-        id_localidad: Código INE de localidad. Solo si no hay provincia.
+        localidad: Nombre de la localidad.
 
     Devuelve "listado_texto" (ya numerado, se muestra tal cual) y "comisarias"
     (mapea el número elegido a su id_comisaria).
     """
-    id_provincia = str(id_provincia).strip()
-    id_localidad = str(id_localidad).strip()
+    fila, err = _resolver_localidad(localidad)
+    if err:
+        return err
 
-    if id_provincia and id_localidad:
-        return _error("INVALID_PARAM",
-                      "Indica solo id_provincia o solo id_localidad, no ambos.")
-    if not id_provincia and not id_localidad:
-        return _error("INVALID_PARAM",
-                      "Debes indicar id_provincia o id_localidad.")
-
-    params = {"codigoPeticion": codigo_peticion}
-    if id_localidad:
-        params["idLocalidad"] = id_localidad
-    else:
-        params["idProvincia"] = id_provincia
+    params = {
+        "codigoPeticion": codigo_peticion,
+        "idLocalidad":    fila["id_localidad"],
+    }
 
     raw, err = await _request("GET", "/ConsultarComisarias", params=params)
     if err:
@@ -240,39 +217,58 @@ async def consultar_comisarias(
     return {
         "ok": True,
         "data": {
-            "provincia":     id_provincia,
-            "localidad":     id_localidad,
-            "total":         len(tab),
-            "mostradas":     len(comisarias),
             "comisarias":    comisarias,
             "listado_texto": listado_texto,
         },
     }
 
 
-@mcp.tool()
-async def consultar_cita_dnie(
-    codigo_peticion: str,
-    tipo_documento: str,
-    numero_documento: str,
-) -> dict:
-    """
-    Consulta la cita de DNI/NIE/pasaporte de un titular.
+def _parsear_cita(raw):
+    """Extrae de la respuesta cruda de Consultar/Alta los campos de la cita ya
+    formateados. Devuelve (tiene_cita, cita_dict): si no hay fecha real,
+    tiene_cita es False y cita_dict es None."""
+    datos     = raw if isinstance(raw, dict) else {}
+    fecha_raw = str(datos.get("fechaCita", "") or "").strip()
+    hora_raw  = str(datos.get("horaCita", "") or "").strip()
 
-    Args:
-        codigo_peticion: Identificador de la petición.
-        tipo_documento: 'D' (DNI) o 'X' (NIE).
-        numero_documento: Número de documento.
+    if not fecha_raw:
+        return False, None
+
+    fecha_disp, hora_disp = _display_fecha_hora(fecha_raw, hora_raw)
+    cita = {
+        "fecha":       fecha_disp,
+        "hora":        hora_disp,
+        "tramite":     str(datos.get("tramiteCita", "") or "").strip(),
+        "comisaria":   str(datos.get("desComisariaCita", "") or "").strip(),
+        "direccion":   str(datos.get("direccionCita", "") or "").strip(),
+        "numero_cita": str(datos.get("numCita", "") or "").strip(),
+    }
+    return True, cita
+
+
+def _frase_cita(cita: dict) -> str:
+    """Frase con los datos de una cita ya formateada: 'el DD/MM/YYYY a las HH:MM
+    en COMISARIA (DIRECCION)'. Omite las partes que falten."""
+    frase = f"el {cita['fecha']} a las {cita['hora']}"
+    if cita.get("comisaria"):
+        frase += f" en {cita['comisaria']}"
+    if cita.get("direccion"):
+        frase += f" ({cita['direccion']})"
+    return frase
+
+
+async def _obtener_cita(codigo_peticion: str, tipo_documento: str, numero_documento: str):
+    """Consulta la cita del titular y devuelve (data, error).
+
+    data tiene el formato: tipo_documento, numero_documento, tiene_cita (bool),
+    cita (dict|None) y resumen_texto. Lo usan tanto la tool de consulta como
+    alta/anular/modificar para autocomprobarse antes de actuar.
     """
     if not numero_documento or not numero_documento.strip():
-        return _error(
+        return None, _error(
             "FALTA_DATO",
-            "Falta el numero de documento. Preguntaselo al ciudadano antes de llamar a esta herramienta.",
+            "Falta el numero de documento. Preguntaselo al ciudadano antes de continuar.",
         )
-
-    tipo_documento = tipo_documento.upper()
-    if tipo_documento not in {"D", "X"}:
-        return _error("INVALID_PARAM", "tipo_documento debe ser 'D' o 'X'.")
 
     params = {
         "codigoPeticion": codigo_peticion,
@@ -282,16 +278,51 @@ async def consultar_cita_dnie(
 
     raw, err = await _request("GET", "/ConsultarCitaDnie", params=params)
     if err:
+        return None, err
+
+    tiene_cita, cita = _parsear_cita(raw)
+    if tiene_cita:
+        resumen_texto = f"Cita {_frase_cita(cita)}."
+        if cita["numero_cita"]:
+            resumen_texto += f" Numero de cita: {cita['numero_cita']}."
+    else:
+        resumen_texto = "No consta ninguna cita para este documento."
+
+    data = {
+        "tipo_documento":   tipo_documento,
+        "numero_documento": numero_documento,
+        "tiene_cita":       tiene_cita,
+        "cita":             cita,
+        "resumen_texto":    resumen_texto,
+    }
+    return data, None
+
+
+@mcp.tool()
+async def consultar_cita_dnie(
+    codigo_peticion: str,
+    tipo_documento: str,
+    numero_documento: str,
+) -> dict:
+    """
+    Consulta la cita de DNI/NIE/pasaporte de un titular. Úsala solo cuando el
+    ciudadano pregunta expresamente si tiene cita; el resto de tools ya
+    comprueban la cita por su cuenta.
+
+    Args:
+        codigo_peticion: Identificador de la petición.
+        tipo_documento: 'D' (DNI) o 'X' (NIE).
+        numero_documento: Número de documento.
+    """
+    tipo_documento = tipo_documento.upper()
+    if tipo_documento not in {"D", "X"}:
+        return _error("INVALID_PARAM", "tipo_documento debe ser 'D' o 'X'.")
+
+    data, err = await _obtener_cita(codigo_peticion, tipo_documento, numero_documento)
+    if err:
         return err
 
-    return {
-        "ok": True,
-        "data": {
-            "tipo_documento":   tipo_documento,
-            "numero_documento": numero_documento,
-            "cita":             raw,
-        },
-    }
+    return {"ok": True, "data": data}
 
 
 
@@ -321,7 +352,8 @@ async def alta_cita_dnie(
     id_tramite: str = "",
 ) -> dict:
     """
-    Da de alta una cita de DNI/NIE/pasaporte.
+    Da de alta una cita de DNI/NIE/pasaporte. Antes comprueba si el titular ya
+    tiene una cita: si la tiene, informa y NO crea otra.
 
     Args:
         codigo_peticion: Identificador de la petición.
@@ -336,6 +368,29 @@ async def alta_cita_dnie(
     if tipo_documento not in {"X", "D"}:
         return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
+    err = _validar_requeridos(id_comisaria=id_comisaria, fechaCita=fechaCita, horaCita=horaCita)
+    if err:
+        return err
+    err = _validar_id_comisaria(id_comisaria)
+    if err:
+        return err
+
+    # Autocomprobación: si ya hay cita, informamos y no creamos otra.
+    cita_actual, err = await _obtener_cita(codigo_peticion, tipo_documento, numero_documento)
+    if err:
+        return err
+    if cita_actual["tiene_cita"]:
+        return {
+            "ok": True,
+            "data": {
+                "creada":        False,
+                "tiene_cita":    True,
+                "cita":          cita_actual["cita"],
+                "resumen_texto": "El titular ya tiene una cita; no se ha creado otra. "
+                                 + cita_actual["resumen_texto"],
+            },
+        }
+
     body = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
                              id_comisaria, fechaCita, horaCita, id_tramite)
 
@@ -343,7 +398,32 @@ async def alta_cita_dnie(
     if err:
         return err
 
-    return {"ok": True, "data": raw}
+    # La respuesta del alta trae la cita confirmada (incluido el numero de cita).
+    tiene, cita = _parsear_cita(raw)
+    if not tiene:
+        # El servicio no ha devuelto los datos; usamos los que se han pedido.
+        fecha_disp, hora_disp = _display_fecha_hora(fechaCita, horaCita)
+        cita = {
+            "fecha":       fecha_disp,
+            "hora":        hora_disp,
+            "tramite":     id_tramite,
+            "comisaria":   "",
+            "direccion":   "",
+            "numero_cita": "",
+        }
+
+    resumen_texto = f"Cita creada correctamente {_frase_cita(cita)}."
+    if cita["numero_cita"]:
+        resumen_texto += f" Numero de cita: {cita['numero_cita']}."
+
+    return {
+        "ok": True,
+        "data": {
+            "creada":        True,
+            "cita":          cita,
+            "resumen_texto": resumen_texto,
+        },
+    }
 
 
 @mcp.tool()
@@ -353,7 +433,8 @@ async def anular_cita_dnie(
     numero_documento: str,
 ) -> dict:
     """
-    Anula la cita de DNI/NIE/pasaporte de un titular.
+    Anula la cita de DNI/NIE/pasaporte de un titular. Antes comprueba si existe
+    la cita: si no hay ninguna, informa y no llama al servicio.
 
     Args:
         codigo_peticion: Identificador de la petición.
@@ -363,6 +444,19 @@ async def anular_cita_dnie(
     tipo_documento = tipo_documento.upper()
     if tipo_documento not in {"X", "D"}:
         return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
+
+    # Autocomprobación: si no hay cita, no hay nada que anular.
+    cita_actual, err = await _obtener_cita(codigo_peticion, tipo_documento, numero_documento)
+    if err:
+        return err
+    if not cita_actual["tiene_cita"]:
+        return {
+            "ok": True,
+            "data": {
+                "anulada":       False,
+                "resumen_texto": "No consta ninguna cita para este documento; no hay nada que anular.",
+            },
+        }
 
     body = {
         "codigoPeticion": codigo_peticion,
@@ -374,8 +468,13 @@ async def anular_cita_dnie(
     if err:
         return err
 
-    return {"ok": True, "data": raw}
-
+    return {
+        "ok": True,
+        "data": {
+            "anulada":       True,
+            "resumen_texto": "Cita anulada correctamente.",
+        },
+    }
 
 @mcp.tool()
 async def modificar_cita_dnie(
@@ -388,7 +487,8 @@ async def modificar_cita_dnie(
     id_tramite: str = "",
 ) -> dict:
     """
-    Modifica la cita de un titular: anula la actual y crea una nueva.
+    Modifica la cita de un titular. Comprueba si ya tiene cita: si la tiene, la
+    anula y crea la nueva; si no la tiene, crea directamente la nueva.
 
     Args:
         codigo_peticion: Identificador de la petición.
@@ -403,14 +503,28 @@ async def modificar_cita_dnie(
     if tipo_documento not in {"X", "D"}:
         return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
-    body_anular = {
-        "codigoPeticion": codigo_peticion,
-        "tipotitular":    tipo_documento,
-        "Idtitular":      numero_documento,
-    }
-    raw_anular, err = await _request("PUT", "/AnularCitaDnie", json=body_anular)
+    err = _validar_requeridos(id_comisaria=id_comisaria, fechaCita=fechaCita, horaCita=horaCita)
     if err:
         return err
+    err = _validar_id_comisaria(id_comisaria)
+    if err:
+        return err
+
+    # Autocomprobación: solo anulamos si de verdad hay una cita previa.
+    cita_actual, err = await _obtener_cita(codigo_peticion, tipo_documento, numero_documento)
+    if err:
+        return err
+    tenia_cita = cita_actual["tiene_cita"]
+
+    if tenia_cita:
+        body_anular = {
+            "codigoPeticion": codigo_peticion,
+            "tipotitular":    tipo_documento,
+            "Idtitular":      numero_documento,
+        }
+        raw_anular, err = await _request("PUT", "/AnularCitaDnie", json=body_anular)
+        if err:
+            return err
 
     body_alta = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
                                   id_comisaria, fechaCita, horaCita, id_tramite)
@@ -418,7 +532,35 @@ async def modificar_cita_dnie(
     if err:
         return err
 
-    return {"ok": True, "data": raw_alta}
+    # La respuesta del alta trae la cita confirmada (incluido el numero de cita).
+    tiene, cita = _parsear_cita(raw_alta)
+    if not tiene:
+        fecha_disp, hora_disp = _display_fecha_hora(fechaCita, horaCita)
+        cita = {
+            "fecha":       fecha_disp,
+            "hora":        hora_disp,
+            "tramite":     id_tramite,
+            "comisaria":   "",
+            "direccion":   "",
+            "numero_cita": "",
+        }
+
+    if tenia_cita:
+        resumen = f"Cita modificada correctamente: ahora es {_frase_cita(cita)}."
+    else:
+        resumen = f"No había cita previa; se ha creado una nueva {_frase_cita(cita)}."
+    if cita["numero_cita"]:
+        resumen += f" Numero de cita: {cita['numero_cita']}."
+
+    return {
+        "ok": True,
+        "data": {
+            "modificada":    tenia_cita,
+            "creada":        not tenia_cita,
+            "cita":          cita,
+            "resumen_texto": resumen,
+        },
+    }
 
 
 @mcp.tool()
@@ -446,7 +588,13 @@ async def enviar_sms(destinatario: str, mensaje: str) -> dict:
     if err:
         return err
 
-    return {"ok": True, "data": raw}
+    return {
+        "ok": True,
+        "data": {
+            "enviado":       True,
+            "resumen_texto": "SMS enviado.",
+        },
+    }
 
 
 def _parse_slot(start_time: str):
@@ -467,6 +615,16 @@ def _fecha_a_iso(aaaammdd: str) -> str:
     return s
 
 
+def _display_fecha_hora(fecha: str, hora: str):
+    """Formatea fechaCita 'AAAAMMDD' -> 'DD/MM/YYYY' y horaCita 'HHMM' -> 'HH:MM'.
+    Si no encajan en ese formato, devuelve el valor original sin tocar."""
+    f = str(fecha or "").strip()
+    h = str(hora or "").strip()
+    fecha_disp = f"{f[6:8]}/{f[4:6]}/{f[:4]}" if len(f) == 8 and f.isdigit() else f
+    hora_disp  = f"{h[:2]}:{h[2:4]}" if len(h) == 4 and h.isdigit() else h
+    return fecha_disp, hora_disp
+
+
 @mcp.tool()
 async def consultar_slots_comisaria(
     id_comisaria: str,
@@ -482,6 +640,13 @@ async def consultar_slots_comisaria(
     Devuelve "listado_texto" (ya numerado, se muestra tal cual) y "slots"
     (mapea el número elegido a su fechaCita y horaCita).
     """
+    err = _validar_requeridos(id_comisaria=id_comisaria, start_date=start_date)
+    if err:
+        return err
+    err = _validar_id_comisaria(id_comisaria)
+    if err:
+        return err
+
     fecha_iso = _fecha_a_iso(start_date)
     params = {
         "startDate": fecha_iso,
@@ -522,18 +687,13 @@ async def consultar_slots_comisaria(
 @mcp.tool()
 def crear_codigo_peticion() -> dict:
     """
-    Genera un código alfanumérico aleatorio de 20 caracteres (mayúsculas y
-    dígitos), útil como codigoPeticion para las demás tools.
-
-    Returns:
-        {
-            "ok": true,
-            "data": { "codigo": "A1B2C3D4E5F6G7H8I9J0" }
-        }
+    Genera un código de petición alfanumérico aleatorio.
     """
     alfabeto = string.ascii_letters + string.digits
     codigo = "".join(secrets.choice(alfabeto) for _ in range(20))
     return {"ok": True, "data": {"codigo": codigo}}
+
+
 
 
 # ──────────────────────────────────────────────
