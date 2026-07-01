@@ -40,9 +40,6 @@ PORT     = 8000
 # a unas pocas, ya limpias y numeradas, para que el agente no se atasque.
 MAX_COMISARIAS = 5
 
-# Maximo de huecos (slots) que se muestran al agente, ya numerados y limpios.
-MAX_SLOTS = 8
-
 # CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
 CSV_CODIGOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigos_ine.csv")
 
@@ -127,27 +124,11 @@ _CODIGOS = _cargar_codigos()
 @mcp.tool()
 def buscar_codigo_localidad(localidad: str, provincia: str = "") -> dict:
     """
-    Traduce el nombre de una localidad (y opcionalmente su provincia) a los
-    códigos INE id_provincia e id_localidad, necesarios para consultar_comisarias.
-
-    La búsqueda ignora mayúsculas y acentos. Si se indica la provincia, se usa
-    para desambiguar localidades con el mismo nombre en distintas provincias.
+    Traduce un nombre de localidad a sus códigos INE (id_provincia, id_localidad).
 
     Args:
-        localidad: Nombre de la localidad tal como lo dice el ciudadano (ej. 'Merida').
-        provincia: Nombre de la provincia (opcional, ayuda a desambiguar).
-
-    Returns:
-        Encontrado unico:
-            {"ok": true, "data": {"id_provincia": "06", "provincia": "Badajoz",
-                                   "id_localidad": "06083", "localidad": "Mérida"}}
-        No encontrado:
-            {"ok": false, "error": {"code": "NOT_FOUND",
-                                    "message": "No se ha encontrado la localidad '...'."}}
-        Varias coincidencias:
-            {"ok": false, "error": {"code": "MULTIPLE",
-                                    "message": "Hay varias localidades que coinciden.",
-                                    "candidatos": [ {...}, {...} ]}}
+        localidad: Nombre de la localidad.
+        provincia: Nombre de la provincia (opcional, desambigua).
     """
     if not _CODIGOS:
         return _error("DATA_ERROR", "No se ha podido cargar la tabla de códigos INE.")
@@ -206,39 +187,16 @@ async def consultar_comisarias(
     id_localidad: str = "",
 ) -> dict:
     """
-    Devuelve las comisarías disponibles para tramitar DNI/NIE/pasaporte.
-
-    Se debe indicar EXACTAMENTE UNO de los dos: id_localidad (si el ciudadano
-    pidió una localidad concreta) o id_provincia (si pidió toda una provincia).
-    Nunca los dos a la vez.
+    Lista las comisarías disponibles para tramitar DNI/NIE/pasaporte.
+    Indica solo uno: id_localidad o id_provincia, nunca ambos.
 
     Args:
-        codigo_peticion: Identificador de la petición (ej. 'ABC123').
-        id_provincia:    Código INE de provincia (ej. '28' → Madrid). Solo si NO se da localidad.
-        id_localidad:    Código INE de localidad (ej. '28079' → Madrid capital). Solo si NO se da provincia.
+        codigo_peticion: Identificador de la petición.
+        id_provincia: Código INE de provincia. Solo si no hay localidad.
+        id_localidad: Código INE de localidad. Solo si no hay provincia.
 
-    Returns (lista ya recortada y limpia, como maximo MAX_COMISARIAS):
-        {
-            "ok": true,
-            "data": {
-                "provincia": "",
-                "localidad": "28079",
-                "total": 35,
-                "mostradas": 5,
-                "listado_texto": "1. MADRID-CENTRO - Calle Luna 17\n2. ...",
-                "comisarias": [
-                    {
-                        "numero": 1,
-                        "id_comisaria": "8693",
-                        "nombre": "MADRID-CENTRO",
-                        "direccion": "Calle Luna 17. MADRID"
-                    }
-                ]
-            }
-        }
-    "listado_texto" es la lista ya numerada y escrita; el agente la muestra tal cual
-    al usuario sin transformar nada. "comisarias" sirve para mapear el numero
-    elegido por el usuario a su id_comisaria.
+    Devuelve "listado_texto" (ya numerado, se muestra tal cual) y "comisarias"
+    (mapea el número elegido a su id_comisaria).
     """
     id_provincia = str(id_provincia).strip()
     id_localidad = str(id_localidad).strip()
@@ -299,22 +257,12 @@ async def consultar_cita_dnie(
     numero_documento: str,
 ) -> dict:
     """
-    Consulta la cita de DNI/NIE/pasaporte asociada a un titular.
+    Consulta la cita de DNI/NIE/pasaporte de un titular.
 
     Args:
-        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
-        tipo_documento:   Tipo de documento
-        numero_documento: Número de documento
-
-    Returns:
-        {
-            "ok": true,
-            "data": {
-                "tipo_documento": "...",
-                "numero_documento": "...",
-                "cita": { ...campos del servicio... }
-            }
-        }
+        codigo_peticion: Identificador de la petición.
+        tipo_documento: 'D' (DNI) o 'X' (NIE).
+        numero_documento: Número de documento.
     """
     if not numero_documento or not numero_documento.strip():
         return _error(
@@ -373,22 +321,16 @@ async def alta_cita_dnie(
     id_tramite: str = "",
 ) -> dict:
     """
-    Da de alta una cita de DNIe/pasaporte para un titular.
+    Da de alta una cita de DNI/NIE/pasaporte.
 
     Args:
-        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
-        tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
-        numero_documento: Número de documento (ej. '12345678Z').
-        id_comisaria:     Código de la comisaría elegida (obligatorio).
-        fechaCita:        Fecha de la cita. Formato AAAAMMDD
-        horaCita:         Hora de la cita. Formato HHMM
-        id_tramite:       Código de trámite (opcional): 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
-
-    Returns:
-        {
-            "ok": true,
-            "data": { ...campos del servicio (cita asignada)... }
-        }
+        codigo_peticion: Identificador de la petición.
+        tipo_documento: 'D' (DNI) o 'X' (NIE).
+        numero_documento: Número de documento.
+        id_comisaria: Código de la comisaría (obligatorio).
+        fechaCita: Fecha de la cita. Formato AAAAMMDD.
+        horaCita: Hora de la cita. Formato HHMM.
+        id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
     """
     tipo_documento = tipo_documento.upper()
     if tipo_documento not in {"X", "D"}:
@@ -411,18 +353,12 @@ async def anular_cita_dnie(
     numero_documento: str,
 ) -> dict:
     """
-    Anula la cita de DNIe/pasaporte asociada a un titular.
+    Anula la cita de DNI/NIE/pasaporte de un titular.
 
     Args:
-        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
-        tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
-        numero_documento: Número de documento (ej. '12345678Z').
-
-    Returns:
-        {
-            "ok": true,
-            "data": { ...campos del servicio (cita anulada)... }
-        }
+        codigo_peticion: Identificador de la petición.
+        tipo_documento: 'D' (DNI) o 'X' (NIE).
+        numero_documento: Número de documento.
     """
     tipo_documento = tipo_documento.upper()
     if tipo_documento not in {"X", "D"}:
@@ -452,23 +388,16 @@ async def modificar_cita_dnie(
     id_tramite: str = "",
 ) -> dict:
     """
-    Modifica la cita de un titular: anula la cita existente y da de alta una
-    nueva con los datos indicados.
+    Modifica la cita de un titular: anula la actual y crea una nueva.
 
     Args:
-        codigo_peticion:  Identificador de la petición (ej. 'ABC123456').
-        tipo_documento:   Tipo de documento: 'X' (NIE) o 'D' (DNI).
-        numero_documento: Número de documento (ej. '12345678Z').
-        id_comisaria:     Código de la comisaría para la nueva cita (obligatorio).
-        fechaCita:        Fecha de la nueva cita. Formato AAAAMMDD
-        horaCita:         Hora de la nueva cita. Formato HHMM
-        id_tramite:       Código de trámite para la nueva cita (opcional). 'DNIE' (DNI o NIE), 'PASAPORTE' (pasaporte).
-
-    Returns:
-        {
-            "ok": true,
-            "data": { ...respuesta AltaCitaDnie de la nueva cita... }
-        }
+        codigo_peticion: Identificador de la petición.
+        tipo_documento: 'D' (DNI) o 'X' (NIE).
+        numero_documento: Número de documento.
+        id_comisaria: Código de la comisaría (obligatorio).
+        fechaCita: Fecha de la nueva cita. Formato AAAAMMDD.
+        horaCita: Hora de la nueva cita. Formato HHMM.
+        id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
     """
     tipo_documento = tipo_documento.upper()
     if tipo_documento not in {"X", "D"}:
@@ -495,22 +424,23 @@ async def modificar_cita_dnie(
 @mcp.tool()
 async def enviar_sms(destinatario: str, mensaje: str) -> dict:
     """
-    Envía un SMS a un número de teléfono.
+    Envía un SMS a un móvil español. La tool añade el prefijo +34.
 
     Args:
-        destinatario: Número de teléfono en formato E.164 (ej. '+34612345678').
-        mensaje:      Texto del SMS a enviar.
-
-    Returns:
-        {
-            "ok": true,
-            "data": {
-                "status": "success",
-                "sid": "SMXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-            }
-        }
+        destinatario: Móvil de 9 dígitos, sin prefijo.
+        mensaje: Texto del SMS.
     """
-    body = {"to": destinatario, "message": mensaje}
+    # Inyectamos el prefijo +34 dentro de la tool. Aceptamos que llegue ya con
+    # prefijo (+34... o 34...) para no duplicarlo.
+    numero = str(destinatario).strip().replace(" ", "")
+    if numero.startswith("+"):
+        telefono = numero
+    elif numero.startswith("34"):
+        telefono = f"+{numero}"
+    else:
+        telefono = f"+34{numero}"
+
+    body = {"to": telefono, "message": mensaje}
 
     raw, err = await _request("POST", "/sms/send", json=body)
     if err:
@@ -541,46 +471,35 @@ def _fecha_a_iso(aaaammdd: str) -> str:
 async def consultar_slots_comisaria(
     id_comisaria: str,
     start_date: str,
-    end_date: str,
 ) -> dict:
     """
-    Devuelve los huecos (slots) de una comisaría, ya numerados y limpios
-    (como maximo MAX_SLOTS), en un rango maximo de 5 dias. Todos los slots que
-    devuelve la API se consideran disponibles.
+    Devuelve los huecos disponibles de una comisaría para un día.
 
     Args:
         id_comisaria: Identificador de la comisaría.
-        start_date: Fecha de inicio (incluida). Formato AAAAMMDD.
-        end_date: Fecha de fin (incluida). Formato AAAAMMDD. Máximo 5 días desde start_date.
+        start_date: Día de la cita. Formato AAAAMMDD.
 
-    Returns:
-        {
-            "ok": true,
-            "data": {
-                "total": 12,
-                "mostrados": 8,
-                "listado_texto": "...",
-                "slots": [
-                    {"numero": 1, "fechaCita": "...", "horaCita": "...", "cuando": "..."}
-                ]
-            }
-        }
-    "listado_texto" ya esta numerado y escrito; el agente lo muestra tal cual.
-    "slots" sirve para mapear el numero elegido a su fechaCita y horaCita.
+    Devuelve "listado_texto" (ya numerado, se muestra tal cual) y "slots"
+    (mapea el número elegido a su fechaCita y horaCita).
     """
+    fecha_iso = _fecha_a_iso(start_date)
     params = {
-        "startDate": _fecha_a_iso(start_date),
-        "endDate": _fecha_a_iso(end_date),
+        "startDate": fecha_iso,
+        "endDate": fecha_iso,
     }
 
     raw, err = await _request("GET", f"/offices/{id_comisaria}/slots", params=params)
     if err:
         return err
 
-    disponibles = raw.get("slots") or [] if isinstance(raw, dict) else []
+    todos = raw.get("slots") or [] if isinstance(raw, dict) else []
+
+    # La API mockeada devuelve todos los slots; el agente solo necesita los
+    # que tienen available=true.
+    disponibles = [s for s in todos if s.get("available") is True]
 
     slots = []
-    for i, s in enumerate(disponibles[:MAX_SLOTS], start=1):
+    for i, s in enumerate(disponibles, start=1):
         fecha, hora, cuando = _parse_slot(s.get("startTime", ""))
         slots.append({
             "numero":    i,
@@ -594,8 +513,6 @@ async def consultar_slots_comisaria(
     return {
         "ok": True,
         "data": {
-            "total":         len(disponibles),
-            "mostrados":     len(slots),
             "slots":         slots,
             "listado_texto": listado_texto,
         },
