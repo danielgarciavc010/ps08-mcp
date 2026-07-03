@@ -26,6 +26,7 @@ import secrets
 import unicodedata
 from datetime import datetime
 from fastmcp import FastMCP
+from rapidfuzz import fuzz
 
 # ──────────────────────────────────────────────
 # Configuración
@@ -39,6 +40,11 @@ PORT     = 8000
 # decenas (p. ej. 35 en Madrid); enviarlas todas satura al modelo. Recortamos
 # a unas pocas, ya limpias y numeradas, para que el agente no se atasque.
 MAX_COMISARIAS = 5
+
+# Umbral (0-100) para el emparejamiento difuso de comisaria por nombre/direccion.
+# Solo se usa como respaldo cuando la coincidencia por subcadena no encuentra
+# nada, para tolerar erratas sin colar coincidencias flojas.
+UMBRAL_FUZZY = 85
 
 # CSV de codigos INE, ubicado junto a este server.py (ruta relativa)
 CSV_CODIGOS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "codigos_ine.csv")
@@ -216,9 +222,12 @@ async def _resolver_comisaria(codigo_peticion: str, localidad: str, comisaria: s
     """Resuelve la comisaria elegida por el ciudadano a su id_comisaria interno.
 
     Acepta el numero de la lista, el nombre o la direccion (sin tildes ni
-    mayusculas). Devuelve (id_comisaria, error): si hay una unica coincidencia,
-    id_comisaria es el codigo y error None; si no hay ninguna o hay varias,
-    id_comisaria es None y error es un _error(...) para que el agente pregunte.
+    mayusculas). Primero busca por subcadena; si no encuentra nada, prueba un
+    emparejamiento difuso (rapidfuzz.partial_ratio >= UMBRAL_FUZZY) para tolerar
+    erratas. Devuelve (comisaria, error): si hay una unica coincidencia,
+    comisaria es el dict {numero, id_comisaria, nombre, direccion} y error None;
+    si no hay ninguna o hay varias, comisaria es None y error es un _error(...)
+    para que el agente pregunte.
     """
     texto = str(comisaria or "").strip()
     if not texto:
@@ -240,7 +249,7 @@ async def _resolver_comisaria(codigo_peticion: str, localidad: str, comisaria: s
         num = int(texto_norm)
         match = next((c for c in comisarias if c["numero"] == num), None)
         if match:
-            return match["id_comisaria"], None
+            return match, None
         return None, _error(
             "NOT_FOUND",
             f"No hay ninguna comisaria con el numero {num} en la lista.",
@@ -251,8 +260,19 @@ async def _resolver_comisaria(codigo_peticion: str, localidad: str, comisaria: s
         c for c in comisarias
         if texto_norm in _normalizar(c["nombre"]) or texto_norm in _normalizar(c["direccion"])
     ]
+
+    # 3) Si la subcadena no encuentra nada, respaldo difuso para tolerar erratas.
+    if not coincidencias:
+        coincidencias = [
+            c for c in comisarias
+            if max(
+                fuzz.partial_ratio(texto_norm, _normalizar(c["nombre"])),
+                fuzz.partial_ratio(texto_norm, _normalizar(c["direccion"])),
+            ) >= UMBRAL_FUZZY
+        ]
+
     if len(coincidencias) == 1:
-        return coincidencias[0]["id_comisaria"], None
+        return coincidencias[0], None
     if not coincidencias:
         return None, _error(
             "NOT_FOUND",
@@ -296,10 +316,18 @@ async def consultar_comisarias(
         f"{c['numero']}. {c['nombre']} - {c['direccion']}" for c in comisarias
     )
 
+    # No exponemos id_comisaria al agente para que no lo confunda: para reservar
+    # basta con numero/nombre/direccion, y slots/alta/modificar resuelven el id
+    # por su cuenta a partir de eso.
+    publicas = [
+        {"numero": c["numero"], "nombre": c["nombre"], "direccion": c["direccion"]}
+        for c in comisarias
+    ]
+
     return {
         "ok": True,
         "data": {
-            "comisarias":    comisarias,
+            "comisarias":    publicas,
             "listado_texto": listado_texto,
         },
     }
@@ -471,9 +499,10 @@ async def alta_cita_dnie(
         }
 
     # Resolvemos la comisaría (número/nombre/dirección) a su código interno.
-    id_comisaria, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
+    comisaria_resuelta, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
     if err:
         return err
+    id_comisaria = comisaria_resuelta["id_comisaria"]
 
     body = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
                              id_comisaria, fechaCita, horaCita, id_tramite)
@@ -581,9 +610,10 @@ async def modificar_cita_dnie(
 
     # Resolvemos la comisaría antes de anular, para no dejar al titular sin cita
     # si la comisaría indicada no existe.
-    id_comisaria, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
+    comisaria_resuelta, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
     if err:
         return err
+    id_comisaria = comisaria_resuelta["id_comisaria"]
 
     if tenia_cita:
         body_anular = {
@@ -617,14 +647,53 @@ async def modificar_cita_dnie(
 
 
 @mcp.tool()
-async def enviar_sms(destinatario: str, mensaje: str) -> dict:
+async def enviar_sms(
+    codigo_peticion: str,
+    destinatario: str,
+    localidad: str,
+    comisaria: str,
+    fechaCita: str,
+    horaCita: str,
+    tramite: str = "",
+) -> dict:
     """
-    Envía un SMS a un móvil español. La tool añade el prefijo +34.
+    Envía un SMS de confirmación de cita. La tool construye el mensaje con un
+    formato fijo a partir de los datos de la cita: resuelve la comisaría para
+    poner su nombre y dirección oficiales, formatea la fecha y la hora, y añade
+    el prefijo +34 al móvil.
 
     Args:
+        codigo_peticion: Identificador de la petición.
         destinatario: Móvil de 9 dígitos, sin prefijo.
-        mensaje: Texto del SMS.
+        localidad: Localidad de la comisaría.
+        comisaria: Comisaría elegida por el ciudadano (número de la lista, nombre
+            o dirección); la tool resuelve nombre y dirección por su cuenta.
+        fechaCita: Fecha de la cita. Formato AAAAMMDD.
+        horaCita: Hora de la cita. Formato HHMM.
+        tramite: Trámite de la cita (DNI, NIE o Pasaporte).
     """
+    err = _validar_requeridos(destinatario=destinatario, localidad=localidad,
+                              comisaria=comisaria, fechaCita=fechaCita, horaCita=horaCita)
+    if err:
+        return err
+
+    # Resolvemos la comisaría para poner en el SMS su nombre y dirección reales,
+    # no lo que haya tecleado el modelo.
+    comisaria_resuelta, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
+    if err:
+        return err
+
+    fecha_disp, hora_disp = _display_fecha_hora(fechaCita, horaCita)
+
+    # Mensaje con formato fijo, construido siempre igual dentro de la tool.
+    tramite_txt = str(tramite or "").strip()
+    encabezado = f"Cita confirmada para {tramite_txt}" if tramite_txt else "Cita confirmada"
+    mensaje = (
+        f"{encabezado}: el {fecha_disp} a las {hora_disp} en "
+        f"{comisaria_resuelta['nombre']} ({comisaria_resuelta['direccion']}). "
+        "Acuda con su documentación."
+    )
+
     # Inyectamos el prefijo +34 dentro de la tool. Aceptamos que llegue ya con
     # prefijo (+34... o 34...) para no duplicarlo.
     numero = str(destinatario).strip().replace(" ", "")
@@ -645,6 +714,7 @@ async def enviar_sms(destinatario: str, mensaje: str) -> dict:
         "ok": True,
         "data": {
             "enviado":       True,
+            "mensaje":       mensaje,
             "resumen_texto": "SMS enviado.",
         },
     }
@@ -702,9 +772,10 @@ async def consultar_slots_comisaria(
     if err:
         return err
 
-    id_comisaria, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
+    comisaria_resuelta, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
     if err:
         return err
+    id_comisaria = comisaria_resuelta["id_comisaria"]
 
     fecha_iso = _fecha_a_iso(start_date)
     params = {
@@ -741,6 +812,8 @@ async def consultar_slots_comisaria(
             "listado_texto": listado_texto,
         },
     }
+
+
 
 
 @mcp.tool()
