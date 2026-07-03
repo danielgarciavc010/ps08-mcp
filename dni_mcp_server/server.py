@@ -71,17 +71,6 @@ def _validar_requeridos(**campos):
     return None
 
 
-def _validar_id_comisaria(id_comisaria: str):
-    """Devuelve un _error si el id de comisaria no es numerico; None si es
-    valido. Los codigos de comisaria son siempre digitos (p. ej. '0002')."""
-    if not str(id_comisaria or "").strip().isdigit():
-        return _error(
-            "INVALID_PARAM",
-            "El id_comisaria debe estar formado solo por digitos.",
-        )
-    return None
-
-
 async def _request(method: str, endpoint: str, base_url: str = BASE_URL, **kwargs):
     """Llama a base_url+endpoint y devuelve (raw, error).
     Si hay error, raw es None y error es el dict _error(...)."""
@@ -167,24 +156,13 @@ def _resolver_localidad(localidad: str):
     }, None
 
 
-@mcp.tool()
-async def consultar_comisarias(
-    codigo_peticion: str,
-    localidad: str,
-) -> dict:
-    """
-    Lista las comisarías disponibles para tramitar DNI/NIE/pasaporte en una localidad.
-
-    Args:
-        codigo_peticion: Identificador de la petición.
-        localidad: Nombre de la localidad.
-
-    Devuelve "listado_texto" (ya numerado, se muestra tal cual) y "comisarias"
-    (mapea el número elegido a su id_comisaria).
-    """
+async def _fetch_comisarias(codigo_peticion: str, localidad: str):
+    """Resuelve la localidad y consulta sus comisarias. Devuelve (comisarias, error),
+    con comisarias ya numeradas y recortadas a MAX_COMISARIAS. Lo comparten la
+    tool de listado y el resolutor por nombre/direccion."""
     fila, err = _resolver_localidad(localidad)
     if err:
-        return err
+        return None, err
 
     params = {
         "codigoPeticion": codigo_peticion,
@@ -193,7 +171,7 @@ async def consultar_comisarias(
 
     raw, err = await _request("GET", "/ConsultarComisarias", params=params)
     if err:
-        return err
+        return None, err
 
     tab = raw.get("tabComi") or [] if isinstance(raw, dict) else []
 
@@ -206,6 +184,85 @@ async def consultar_comisarias(
         }
         for i, c in enumerate(tab[:MAX_COMISARIAS], start=1)
     ]
+    return comisarias, None
+
+
+async def _resolver_comisaria(codigo_peticion: str, localidad: str, comisaria: str):
+    """Resuelve la comisaria elegida por el ciudadano a su id_comisaria interno.
+
+    Acepta el numero de la lista, el nombre o la direccion (sin tildes ni
+    mayusculas). Devuelve (id_comisaria, error): si hay una unica coincidencia,
+    id_comisaria es el codigo y error None; si no hay ninguna o hay varias,
+    id_comisaria es None y error es un _error(...) para que el agente pregunte.
+    """
+    texto = str(comisaria or "").strip()
+    if not texto:
+        return None, _error(
+            "FALTA_DATO",
+            "Falta la comisaria. Preguntasela al ciudadano antes de continuar.",
+        )
+
+    comisarias, err = await _fetch_comisarias(codigo_peticion, localidad)
+    if err:
+        return None, err
+    if not comisarias:
+        return None, _error("NOT_FOUND", f"No hay comisarias disponibles en '{localidad}'.")
+
+    texto_norm = _normalizar(texto)
+
+    # 1) El ciudadano elige por el numero de la lista.
+    if texto_norm.isdigit():
+        num = int(texto_norm)
+        match = next((c for c in comisarias if c["numero"] == num), None)
+        if match:
+            return match["id_comisaria"], None
+        return None, _error(
+            "NOT_FOUND",
+            f"No hay ninguna comisaria con el numero {num} en la lista.",
+        )
+
+    # 2) Coincidencia por nombre o direccion (subcadena normalizada).
+    coincidencias = [
+        c for c in comisarias
+        if texto_norm in _normalizar(c["nombre"]) or texto_norm in _normalizar(c["direccion"])
+    ]
+    if len(coincidencias) == 1:
+        return coincidencias[0]["id_comisaria"], None
+    if not coincidencias:
+        return None, _error(
+            "NOT_FOUND",
+            f"No se ha encontrado ninguna comisaria que coincida con '{comisaria}'.",
+        )
+
+    listado = "\n".join(
+        f"{c['numero']}. {c['nombre']} - {c['direccion']}" for c in coincidencias
+    )
+    return None, _error(
+        "AMBIGUO",
+        f"Hay varias comisarias que coinciden con '{comisaria}':\n{listado}\n"
+        "Pide al ciudadano que concrete cual.",
+    )
+
+
+@mcp.tool()
+async def consultar_comisarias(
+    codigo_peticion: str,
+    localidad: str,
+) -> dict:
+    """
+    Lista las comisarías disponibles para tramitar DNI/NIE/pasaporte en una localidad.
+
+    Args:
+        codigo_peticion: Identificador de la petición.
+        localidad: Nombre de la localidad.
+
+    Devuelve "listado_texto" (ya numerado, se muestra tal cual) y "comisarias".
+    Para reservar, el ciudadano elige por número, nombre o dirección; las tools
+    de slots/alta/modificar resuelven la comisaría por su cuenta.
+    """
+    comisarias, err = await _fetch_comisarias(codigo_peticion, localidad)
+    if err:
+        return err
 
     # Lista ya escrita y numerada, lista para mostrar al usuario tal cual.
     # Usamos guion ASCII normal (no raya larga) para que el modelo cuantizado
@@ -340,13 +397,13 @@ def _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
         body["idTramite"] = id_tramite
     return body
 
-
 @mcp.tool()
 async def alta_cita_dnie(
     codigo_peticion: str,
     tipo_documento: str,
     numero_documento: str,
-    id_comisaria: str,
+    localidad: str,
+    comisaria: str,
     fechaCita: str,
     horaCita: str,
     id_tramite: str = "",
@@ -359,7 +416,9 @@ async def alta_cita_dnie(
         codigo_peticion: Identificador de la petición.
         tipo_documento: 'D' (DNI) o 'X' (NIE).
         numero_documento: Número de documento.
-        id_comisaria: Código de la comisaría (obligatorio).
+        localidad: Localidad de la comisaría.
+        comisaria: Comisaría elegida por el ciudadano (número de la lista, nombre
+            o dirección); la tool resuelve el código por su cuenta.
         fechaCita: Fecha de la cita. Formato AAAAMMDD.
         horaCita: Hora de la cita. Formato HHMM.
         id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
@@ -368,10 +427,8 @@ async def alta_cita_dnie(
     if tipo_documento not in {"X", "D"}:
         return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
-    err = _validar_requeridos(id_comisaria=id_comisaria, fechaCita=fechaCita, horaCita=horaCita)
-    if err:
-        return err
-    err = _validar_id_comisaria(id_comisaria)
+    err = _validar_requeridos(localidad=localidad, comisaria=comisaria,
+                              fechaCita=fechaCita, horaCita=horaCita)
     if err:
         return err
 
@@ -390,6 +447,11 @@ async def alta_cita_dnie(
                                  + cita_actual["resumen_texto"],
             },
         }
+
+    # Resolvemos la comisaría (número/nombre/dirección) a su código interno.
+    id_comisaria, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
+    if err:
+        return err
 
     body = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
                              id_comisaria, fechaCita, horaCita, id_tramite)
@@ -463,7 +525,8 @@ async def modificar_cita_dnie(
     codigo_peticion: str,
     tipo_documento: str,
     numero_documento: str,
-    id_comisaria: str,
+    localidad: str,
+    comisaria: str,
     fechaCita: str,
     horaCita: str,
     id_tramite: str = "",
@@ -476,7 +539,9 @@ async def modificar_cita_dnie(
         codigo_peticion: Identificador de la petición.
         tipo_documento: 'D' (DNI) o 'X' (NIE).
         numero_documento: Número de documento.
-        id_comisaria: Código de la comisaría (obligatorio).
+        localidad: Localidad de la comisaría.
+        comisaria: Comisaría elegida por el ciudadano (número de la lista, nombre
+            o dirección); la tool resuelve el código por su cuenta.
         fechaCita: Fecha de la nueva cita. Formato AAAAMMDD.
         horaCita: Hora de la nueva cita. Formato HHMM.
         id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
@@ -485,10 +550,8 @@ async def modificar_cita_dnie(
     if tipo_documento not in {"X", "D"}:
         return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
 
-    err = _validar_requeridos(id_comisaria=id_comisaria, fechaCita=fechaCita, horaCita=horaCita)
-    if err:
-        return err
-    err = _validar_id_comisaria(id_comisaria)
+    err = _validar_requeridos(localidad=localidad, comisaria=comisaria,
+                              fechaCita=fechaCita, horaCita=horaCita)
     if err:
         return err
 
@@ -497,6 +560,12 @@ async def modificar_cita_dnie(
     if err:
         return err
     tenia_cita = cita_actual["tiene_cita"]
+
+    # Resolvemos la comisaría antes de anular, para no dejar al titular sin cita
+    # si la comisaría indicada no existe.
+    id_comisaria, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
+    if err:
+        return err
 
     if tenia_cita:
         body_anular = {
@@ -527,7 +596,6 @@ async def modificar_cita_dnie(
             "resumen_texto": resumen,
         },
     }
-
 
 
 @mcp.tool()
@@ -594,23 +662,29 @@ def _display_fecha_hora(fecha: str, hora: str):
 
 @mcp.tool()
 async def consultar_slots_comisaria(
-    id_comisaria: str,
+    codigo_peticion: str,
+    localidad: str,
+    comisaria: str,
     start_date: str,
 ) -> dict:
     """
     Devuelve los huecos disponibles de una comisaría para un día.
 
     Args:
-        id_comisaria: Identificador de la comisaría.
+        codigo_peticion: Identificador de la petición.
+        localidad: Localidad de la comisaría.
+        comisaria: Comisaría elegida por el ciudadano (número de la lista, nombre
+            o dirección); la tool resuelve el código por su cuenta.
         start_date: Día de la cita. Formato AAAAMMDD.
 
     Devuelve "listado_texto" (ya numerado, se muestra tal cual) y "slots"
     (mapea el número elegido a su fechaCita y horaCita).
     """
-    err = _validar_requeridos(id_comisaria=id_comisaria, start_date=start_date)
+    err = _validar_requeridos(localidad=localidad, comisaria=comisaria, start_date=start_date)
     if err:
         return err
-    err = _validar_id_comisaria(id_comisaria)
+
+    id_comisaria, err = await _resolver_comisaria(codigo_peticion, localidad, comisaria)
     if err:
         return err
 
@@ -659,7 +733,6 @@ def crear_codigo_peticion() -> dict:
     alfabeto = string.ascii_letters + string.digits
     codigo = "".join(secrets.choice(alfabeto) for _ in range(20))
     return {"ok": True, "data": {"codigo": codigo}}
-
 
 
 
