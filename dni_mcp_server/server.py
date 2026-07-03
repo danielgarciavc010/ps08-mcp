@@ -71,6 +71,28 @@ def _validar_requeridos(**campos):
     return None
 
 
+def _inferir_tipo_documento(numero_documento: str):
+    """Deduce el tipo de documento a partir del numero, sin pedirselo al agente:
+    - NIE: empieza por X, Y o Z -> 'X'
+    - DNI: empieza por digito   -> 'D'
+    Devuelve (tipo, error): si no encaja en ninguno, tipo es None y error es un
+    _error(...)."""
+    doc = str(numero_documento or "").strip().upper()
+    if not doc:
+        return None, _error(
+            "FALTA_DATO",
+            "Falta el numero de documento. Preguntaselo al ciudadano antes de continuar.",
+        )
+    if doc[0] in {"X", "Y", "Z"}:
+        return "X", None
+    if doc[0].isdigit():
+        return "D", None
+    return None, _error(
+        "INVALID_PARAM",
+        "El numero de documento no tiene un formato valido de DNI o NIE.",
+    )
+
+
 async def _request(method: str, endpoint: str, base_url: str = BASE_URL, **kwargs):
     """Llama a base_url+endpoint y devuelve (raw, error).
     Si hay error, raw es None y error es el dict _error(...)."""
@@ -164,8 +186,11 @@ async def _fetch_comisarias(codigo_peticion: str, localidad: str):
     if err:
         return None, err
 
+    # La API mockeada solo mira idProvincia para acotar la zona, asi que lo
+    # enviamos junto a idLocalidad (que la fila de codigos INE ya resuelve).
     params = {
         "codigoPeticion": codigo_peticion,
+        "idProvincia":    fila["id_provincia"],
         "idLocalidad":    fila["id_localidad"],
     }
 
@@ -358,7 +383,6 @@ async def _obtener_cita(codigo_peticion: str, tipo_documento: str, numero_docume
 @mcp.tool()
 async def consultar_cita_dnie(
     codigo_peticion: str,
-    tipo_documento: str,
     numero_documento: str,
 ) -> dict:
     """
@@ -368,12 +392,11 @@ async def consultar_cita_dnie(
 
     Args:
         codigo_peticion: Identificador de la petición.
-        tipo_documento: 'D' (DNI) o 'X' (NIE).
-        numero_documento: Número de documento.
+        numero_documento: Número de documento (DNI o NIE); el tipo se deduce solo.
     """
-    tipo_documento = tipo_documento.upper()
-    if tipo_documento not in {"D", "X"}:
-        return _error("INVALID_PARAM", "tipo_documento debe ser 'D' o 'X'.")
+    tipo_documento, err = _inferir_tipo_documento(numero_documento)
+    if err:
+        return err
 
     data, err = await _obtener_cita(codigo_peticion, tipo_documento, numero_documento)
     if err:
@@ -397,10 +420,10 @@ def _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
         body["idTramite"] = id_tramite
     return body
 
+
 @mcp.tool()
 async def alta_cita_dnie(
     codigo_peticion: str,
-    tipo_documento: str,
     numero_documento: str,
     localidad: str,
     comisaria: str,
@@ -414,8 +437,7 @@ async def alta_cita_dnie(
 
     Args:
         codigo_peticion: Identificador de la petición.
-        tipo_documento: 'D' (DNI) o 'X' (NIE).
-        numero_documento: Número de documento.
+        numero_documento: Número de documento (DNI o NIE); el tipo se deduce solo.
         localidad: Localidad de la comisaría.
         comisaria: Comisaría elegida por el ciudadano (número de la lista, nombre
             o dirección); la tool resuelve el código por su cuenta.
@@ -423,9 +445,9 @@ async def alta_cita_dnie(
         horaCita: Hora de la cita. Formato HHMM.
         id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
     """
-    tipo_documento = tipo_documento.upper()
-    if tipo_documento not in {"X", "D"}:
-        return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
+    tipo_documento, err = _inferir_tipo_documento(numero_documento)
+    if err:
+        return err
 
     err = _validar_requeridos(localidad=localidad, comisaria=comisaria,
                               fechaCita=fechaCita, horaCita=horaCita)
@@ -472,7 +494,6 @@ async def alta_cita_dnie(
 @mcp.tool()
 async def anular_cita_dnie(
     codigo_peticion: str,
-    tipo_documento: str,
     numero_documento: str,
 ) -> dict:
     """
@@ -481,12 +502,11 @@ async def anular_cita_dnie(
 
     Args:
         codigo_peticion: Identificador de la petición.
-        tipo_documento: 'D' (DNI) o 'X' (NIE).
-        numero_documento: Número de documento.
+        numero_documento: Número de documento (DNI o NIE); el tipo se deduce solo.
     """
-    tipo_documento = tipo_documento.upper()
-    if tipo_documento not in {"X", "D"}:
-        return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
+    tipo_documento, err = _inferir_tipo_documento(numero_documento)
+    if err:
+        return err
 
     # Autocomprobación: si no hay cita, no hay nada que anular.
     cita_actual, err = await _obtener_cita(codigo_peticion, tipo_documento, numero_documento)
@@ -523,7 +543,6 @@ async def anular_cita_dnie(
 @mcp.tool()
 async def modificar_cita_dnie(
     codigo_peticion: str,
-    tipo_documento: str,
     numero_documento: str,
     localidad: str,
     comisaria: str,
@@ -537,8 +556,7 @@ async def modificar_cita_dnie(
 
     Args:
         codigo_peticion: Identificador de la petición.
-        tipo_documento: 'D' (DNI) o 'X' (NIE).
-        numero_documento: Número de documento.
+        numero_documento: Número de documento (DNI o NIE); el tipo se deduce solo.
         localidad: Localidad de la comisaría.
         comisaria: Comisaría elegida por el ciudadano (número de la lista, nombre
             o dirección); la tool resuelve el código por su cuenta.
@@ -546,9 +564,9 @@ async def modificar_cita_dnie(
         horaCita: Hora de la nueva cita. Formato HHMM.
         id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
     """
-    tipo_documento = tipo_documento.upper()
-    if tipo_documento not in {"X", "D"}:
-        return _error("INVALID_PARAM", "tipo_documento debe ser 'X' o 'D'.")
+    tipo_documento, err = _inferir_tipo_documento(numero_documento)
+    if err:
+        return err
 
     err = _validar_requeridos(localidad=localidad, comisaria=comisaria,
                               fechaCita=fechaCita, horaCita=horaCita)
