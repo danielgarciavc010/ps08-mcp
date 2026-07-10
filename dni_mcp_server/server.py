@@ -31,7 +31,7 @@ from rapidfuzz import fuzz
 # ──────────────────────────────────────────────
 # Configuración
 # ──────────────────────────────────────────────
-BASE_URL = "http://rag.kyoe.es"
+BASE_URL = "10.118.185.114:8080"
 TIMEOUT  = 15.0
 HOST     = "0.0.0.0"
 PORT     = 8000
