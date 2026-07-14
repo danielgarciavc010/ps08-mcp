@@ -99,6 +99,23 @@ def _inferir_tipo_documento(numero_documento: str):
     )
 
 
+# Letras de control para DNI/NIE (algoritmo modulo 23 de la DGP).
+_LETRAS_CONTROL = "TRWAGMYFPDXBNJZSQVHLCKE"
+
+
+def _normalizar_id_tramite(id_tramite: str) -> str:
+    """Traduce el tramite que indica el agente ('DNI', 'NIE' o 'PASAPORTE', en
+    mayusculas o minusculas) al codigo que espera la API: DNI y NIE -> 'DNIE';
+    PASAPORTE -> 'PASAPORTE'. Si viene vacio, devuelve '' para que la API use su
+    tramite por defecto."""
+    t = str(id_tramite or "").strip().upper()
+    if t in {"DNI", "NIE", "DNIE"}:
+        return "DNIE"
+    if t in {"PASAPORTE", "PASSPORT"}:
+        return "PASAPORTE"
+    return t
+
+
 async def _request(method: str, endpoint: str, base_url: str = BASE_URL, **kwargs):
     """Llama a base_url+endpoint y devuelve (raw, error).
     Si hay error, raw es None y error es el dict _error(...)."""
@@ -290,6 +307,82 @@ async def _resolver_comisaria(codigo_peticion: str, localidad: str, comisaria: s
 
 
 @mcp.tool()
+def validar_documento(numero_documento: str) -> dict:
+    """
+    Valida un número de documento español (DNI o NIE) comprobando su formato y
+    su letra de control. Úsala para verificar el documento que da el ciudadano
+    antes de consultar, dar de alta, modificar o anular una cita: así el agente
+    no tiene que validar el número por su cuenta. Si el documento no es válido,
+    pídeselo de nuevo al ciudadano.
+
+    Args:
+        numero_documento: Número de documento a validar (DNI o NIE).
+
+    Devuelve el tipo detectado ('DNI' o 'NIE') y el número normalizado. Si no es
+    válido, devuelve un error para que lo pidas de nuevo.
+    """
+    doc = str(numero_documento or "").strip().upper().replace("-", "").replace(" ", "")
+    if not doc:
+        return _error(
+            "FALTA_DATO",
+            "Falta el numero de documento. Preguntaselo al ciudadano antes de continuar.",
+        )
+
+    # NIE: X/Y/Z + 7 digitos + letra de control. La letra inicial se sustituye
+    # por su digito (X->0, Y->1, Z->2) antes de calcular la letra de control.
+    if doc[0] in {"X", "Y", "Z"}:
+        cuerpo, letra = doc[:-1], doc[-1]
+        numero = {"X": "0", "Y": "1", "Z": "2"}[cuerpo[0]] + cuerpo[1:]
+        if len(cuerpo) != 8 or not numero.isdigit() or not letra.isalpha():
+            return _error(
+                "DOCUMENTO_INVALIDO",
+                f"El NIE '{numero_documento}' no tiene un formato valido. "
+                "Pideselo de nuevo al ciudadano y verificalo.",
+            )
+        if _LETRAS_CONTROL[int(numero) % 23] != letra:
+            return _error(
+                "DOCUMENTO_INVALIDO",
+                f"La letra del NIE '{numero_documento}' no es correcta. "
+                "Pideselo de nuevo al ciudadano y verificalo.",
+            )
+        tipo = "NIE"
+
+    # DNI: 8 digitos + letra de control.
+    elif doc[0].isdigit():
+        cuerpo, letra = doc[:-1], doc[-1]
+        if len(cuerpo) != 8 or not cuerpo.isdigit() or not letra.isalpha():
+            return _error(
+                "DOCUMENTO_INVALIDO",
+                f"El DNI '{numero_documento}' no tiene un formato valido. "
+                "Pideselo de nuevo al ciudadano y verificalo.",
+            )
+        if _LETRAS_CONTROL[int(cuerpo) % 23] != letra:
+            return _error(
+                "DOCUMENTO_INVALIDO",
+                f"La letra del DNI '{numero_documento}' no es correcta. "
+                "Pideselo de nuevo al ciudadano y verificalo.",
+            )
+        tipo = "DNI"
+
+    else:
+        return _error(
+            "DOCUMENTO_INVALIDO",
+            f"El documento '{numero_documento}' no es un DNI ni un NIE valido. "
+            "Pideselo de nuevo al ciudadano y verificalo.",
+        )
+
+    return {
+        "ok": True,
+        "data": {
+            "valido":           True,
+            "tipo":             tipo,
+            "numero_documento": doc,
+            "resumen_texto":    f"El {tipo} {doc} es valido.",
+        },
+    }
+
+
+@mcp.tool()
 async def consultar_comisarias(
     codigo_peticion: str,
     localidad: str,
@@ -408,6 +501,8 @@ async def _obtener_cita(codigo_peticion: str, tipo_documento: str, numero_docume
     return data, None
 
 
+
+
 @mcp.tool()
 async def consultar_cita_dnie(
     codigo_peticion: str,
@@ -471,7 +566,8 @@ async def alta_cita_dnie(
             o dirección); la tool resuelve el código por su cuenta.
         fechaCita: Fecha de la cita. Formato AAAAMMDD.
         horaCita: Hora de la cita. Formato HHMM.
-        id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
+        id_tramite: Opcional: 'DNI', 'NIE' o 'PASAPORTE' (mayúsculas o minúsculas);
+            la tool convierte DNI/NIE a 'DNIE' para la API.
     """
     tipo_documento, err = _inferir_tipo_documento(numero_documento)
     if err:
@@ -503,6 +599,9 @@ async def alta_cita_dnie(
     if err:
         return err
     id_comisaria = comisaria_resuelta["id_comisaria"]
+
+    # El agente pasa 'DNI'/'NIE'/'PASAPORTE'; la API espera 'DNIE'/'PASAPORTE'.
+    id_tramite = _normalizar_id_tramite(id_tramite)
 
     body = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
                              id_comisaria, fechaCita, horaCita, id_tramite)
@@ -591,7 +690,8 @@ async def modificar_cita_dnie(
             o dirección); la tool resuelve el código por su cuenta.
         fechaCita: Fecha de la nueva cita. Formato AAAAMMDD.
         horaCita: Hora de la nueva cita. Formato HHMM.
-        id_tramite: Opcional: 'DNIE' (DNI/NIE) o 'PASAPORTE'.
+        id_tramite: Opcional: 'DNI', 'NIE' o 'PASAPORTE' (mayúsculas o minúsculas);
+            la tool convierte DNI/NIE a 'DNIE' para la API.
     """
     tipo_documento, err = _inferir_tipo_documento(numero_documento)
     if err:
@@ -624,6 +724,9 @@ async def modificar_cita_dnie(
         raw_anular, err = await _request("PUT", "/AnularCitaDnie", json=body_anular)
         if err:
             return err
+
+    # El agente pasa 'DNI'/'NIE'/'PASAPORTE'; la API espera 'DNIE'/'PASAPORTE'.
+    id_tramite = _normalizar_id_tramite(id_tramite)
 
     body_alta = _build_alta_body(codigo_peticion, tipo_documento, numero_documento,
                                   id_comisaria, fechaCita, horaCita, id_tramite)
@@ -746,6 +849,7 @@ def _display_fecha_hora(fecha: str, hora: str):
     fecha_disp = f"{f[6:8]}/{f[4:6]}/{f[:4]}" if len(f) == 8 and f.isdigit() else f
     hora_disp  = f"{h[:2]}:{h[2:4]}" if len(h) == 4 and h.isdigit() else h
     return fecha_disp, hora_disp
+
 
 
 @mcp.tool()
