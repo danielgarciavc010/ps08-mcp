@@ -395,8 +395,8 @@ def validar_documento(numero_documento: str) -> dict:
     if _es_documento_ejemplo(digitos):
         return _error(
             "DOCUMENTO_INVALIDO",
-            f"El documento '{numero_documento}' parece un numero de ejemplo que has introducido tú sin preguntarle al ciudadano."
-            "No uses documentos de ejemplo: pideselo al ciudadano.",
+            f"El documento '{numero_documento}' parece un numero de ejemplo que has introducido tú sin preguntarle al ciudadano. "
+            "No te lo inventes y pideselo al usuario.",
         )
 
     return {
