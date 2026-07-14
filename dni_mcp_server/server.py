@@ -103,6 +103,23 @@ def _inferir_tipo_documento(numero_documento: str):
 _LETRAS_CONTROL = "TRWAGMYFPDXBNJZSQVHLCKE"
 
 
+def _es_documento_ejemplo(digitos: str) -> bool:
+    """True si el bloque de digitos parece un numero de ejemplo/inventado: todos
+    los digitos iguales (00000000, 11111111...) o una secuencia estrictamente
+    ascendente/descendente (12345678, 87654321...). El modelo cuantizado fabrica
+    justo estos cuando el ciudadano da muchos datos y no incluye el documento
+    real (tipico: el 12345678Z de los ejemplos). Aunque el checksum sea valido,
+    no son documentos reales, asi que los rechazamos para forzar que se pidan."""
+    d = str(digitos or "")
+    if not d.isdigit() or len(d) < 2:
+        return False
+    if len(set(d)) == 1:
+        return True
+    ascendente = all(int(d[i + 1]) - int(d[i]) == 1 for i in range(len(d) - 1))
+    descendente = all(int(d[i]) - int(d[i + 1]) == 1 for i in range(len(d) - 1))
+    return ascendente or descendente
+
+
 def _normalizar_id_tramite(id_tramite: str) -> str:
     """Traduce el tramite que indica el agente ('DNI', 'NIE' o 'PASAPORTE', en
     mayusculas o minusculas) al codigo que espera la API: DNI y NIE -> 'DNIE';
@@ -369,6 +386,17 @@ def validar_documento(numero_documento: str) -> dict:
             "DOCUMENTO_INVALIDO",
             f"El documento '{numero_documento}' no es un DNI ni un NIE valido. "
             "Pideselo de nuevo al ciudadano y verificalo.",
+        )
+
+    # Red de seguridad: rechazamos numeros de ejemplo/inventados (todos iguales o
+    # secuenciales, p. ej. 12345678Z) aunque el checksum sea valido. El modelo
+    # los fabrica cuando no tiene el documento real; obligamos a pedir el de verdad.
+    digitos = cuerpo[1:] if tipo == "NIE" else cuerpo
+    if _es_documento_ejemplo(digitos):
+        return _error(
+            "DOCUMENTO_INVALIDO",
+            f"El documento '{numero_documento}' parece un numero de ejemplo, no uno "
+            "real. No uses documentos de ejemplo: pideselo de nuevo al ciudadano.",
         )
 
     return {
